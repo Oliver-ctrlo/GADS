@@ -537,10 +537,6 @@ post '/api/user_account/?:id?' => require_login sub {
     _post_add_user_account();
 };
 
-post '/api/user_account_request/:id' => require_login sub {
-    _post_request_account();
-};
-
 post '/api/table_request' => require_login sub {
     _post_table_request();
 };
@@ -548,6 +544,29 @@ post '/api/table_request' => require_login sub {
 # AJAX record browse
 any ['get', 'post'] => '/api/:sheet/records' => require_login sub {
     _get_records();
+};
+
+post '/api/settings/logo' => require_login sub {
+    my $site = var 'site';
+
+    error __"You do not have permission to manage system settings" unless logged_in_user->permission->{superadmin};
+
+    my $file = upload('file') or error __"No file provided";
+    my $filecheck = GADS::Filecheck->instance;
+    error __x"Files of mimetype {mimetype} are not allowed", mimetype => $filecheck->get_filetype($file)
+        unless $filecheck->is_image($file);
+    
+    $site->update({ site_logo => $file->content });
+
+    content_type 'application/json';
+    # 201 is created rather than ok
+    status 201;
+    return encode_json(
+        {
+            error => 0,
+            url   => '/settings/logo'
+        }
+    );
 };
 
 sub _post_dashboard_widget {
@@ -631,52 +650,54 @@ sub _put_dashboard_widget_edit {
     my $user   = logged_in_user;
     my $widget = _get_widget_write(route_parameters->get('id'), route_parameters->get('dashboard_id'), $layout, $user);
 
-    $widget->title(query_parameters->get('title'));
+    my $body = from_json(request->body);
+    
+    $widget->title($body->{'title'});
     $widget->static(query_parameters->get('static') ? 1 : 0)
         if $widget->dashboard->is_shared;
     if ($widget->type eq 'notice')
     {
         $widget->set_columns({
-            content => query_parameters->get('content'),
+            content => $body->{'content'},
         });
     }
     elsif ($widget->type eq 'graph')
     {
         $widget->set_columns({
-            graph_id => query_parameters->get('graph_id'),
-            view_id  => query_parameters->get('view_id'),
+            graph_id => $body->{'graph_id'},
+            view_id  => $body->{'view_id'},
         });
     }
     elsif ($widget->type eq 'table')
     {
         $widget->set_columns({
-            rows     => query_parameters->get('rows'),
-            view_id  => query_parameters->get('view_id'),
+            rows     => $body->{'rows'},
+            view_id  => $body->{'view_id'},
         });
     }
     elsif ($widget->type eq 'timeline')
     {
         my $tl_options = {
-            label   => query_parameters->get('tl_label'),
-            group   => query_parameters->get('tl_group'),
-            color   => query_parameters->get('tl_color'),
-            overlay => query_parameters->get('tl_overlay'),
+            label   => $body->{'tl_label'},
+            group   => $body->{'tl_group'},
+            color   => $body->{'tl_color'},
+            overlay => $body->{'tl_overlay'},
         };
         $widget->set_columns({
             tl_options => encode_json($tl_options),
-            view_id    => query_parameters->get('view_id'),
+            view_id    => $body->{'view_id'},
         });
     }
     elsif ($widget->type eq 'globe')
     {
         my $globe_options = {
-            label   => query_parameters->get('globe_label'),
-            group   => query_parameters->get('globe_group'),
-            color   => query_parameters->get('globe_color'),
+            label   => $body->{'globe_label'},
+            group   => $body->{'globe_group'},
+            color   => $body->{'globe_color'},
         };
         $widget->set_columns({
             globe_options => encode_json($globe_options),
-            view_id       => query_parameters->get('view_id'),
+            view_id       => $body->{'view_id'},
         });
     }
     $widget->update;
@@ -732,53 +753,6 @@ sub _post_add_user_account
 
     my $msg = __x"User {type} successfully", type => $id ? 'updated' : 'created';
     return _success("$msg");
-}
-
-sub _post_request_account {
-    if (request->content_type ne 'application/json') # Try in body of JSON
-    {
-        return;
-    }
-
-    my $body = try { decode_json(request->body) };
-
-    if (!$body)
-    {
-        return;
-    }
-
-    my %values = (
-        firstname             => $body->{'firstname'},
-        surname               => $body->{'surname'},
-        email                 => $body->{'email'},
-        username              => $body->{'email'},
-        freetext1             => $body->{'freetext1'},
-        freetext2             => $body->{'freetext2'},
-        title                 => $body->{'title'} || undef,
-        organisation          => $body->{'organisation'} || undef,
-        department_id         => $body->{'department_id'} || undef,
-        team_id               => $body->{'team_id'} || undef,
-        account_request       => $body->{'approve-account'},
-        account_request_notes => $body->{'notes'} || '',
-        view_limits           => $body->{'view_limits'} || [],
-        groups                => $body->{'groups'} || [],
-    );
-
-    if(logged_in_user->permission->{superadmin})
-    {
-        $values{permissions} = $body->{'permissions'} || [];
-    }
-
-    my $id = route_parameters->get('id');
-
-    if (process sub {
-        my $user = rset('User')->active->search({ id => $id })->next
-            or error __x"User ID {id} not found", id => $id;
-        # Don't use DBIC update directly, so that permissions etc are updated properly
-        $user->update_user(current_user => logged_in_user, %values);
-    }) {
-        return _success("User updated successfully");
-    }
 }
 
 sub _create_table

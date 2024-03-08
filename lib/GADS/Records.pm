@@ -29,6 +29,7 @@ use GADS::Record;
 use GADS::Timeline;
 use GADS::View;
 use HTML::Entities;
+use JSON qw(encode_json);
 use List::Util  qw(min max);
 use Log::Report 'linkspace';
 use POSIX qw(ceil);
@@ -577,6 +578,10 @@ sub search_view
 
     return unless $view && @$current_ids;
 
+    # Need to set view in this object, otherwise construction of any general
+    # searches misses the search conditions of the view
+    $self->view($view);
+
     # Need to specify no columns to be retrieved, otherwise as soon as
     # $self->joins is called, prefetch will have all the columns in
     $self->columns([]);
@@ -611,12 +616,14 @@ sub search_view
             {
                 # See comment above about searching for all current_ids
                 my $search = { -and => \@searches };
-                unless (@$current_ids == $self->count)
-                {
-                    my $max = $i + 499;
-                    $max = @$current_ids-1 if $max >= @$current_ids;
-                    $search->{'me.id'} = [@{$current_ids}[$i..$max]];
-                }
+                # At this point we used to see if the number of records in the
+                # view was equal to the number of current_ids, to try and skip
+                # the multiple loops if possile. However, it turned out that
+                # count() is expensive (especially if only one current_id), so
+                # this has been removed
+                my $max = $i + 499;
+                $max = @$current_ids-1 if $max >= @$current_ids;
+                $search->{'me.id'} = [@{$current_ids}[$i..$max]];
                 push @ids, $self->schema->resultset('Current')->search($search, {
                     join => [
                         [$self->linked_hash(search => 1)],
@@ -650,6 +657,44 @@ sub search_view
         }
     }
     @foundin;
+}
+
+sub find_unique
+{   my ($self, $column, $value, @retrieve_columns) = @_;
+
+    # First create a view to search for this value in the column.
+    my $filter = encode_json({
+        rules => [{
+            field       => $column->id,
+            id          => $column->id,
+            type        => $column->type,
+            value       => $value,
+            value_field => $column->value_field_as_index($value), # May need to use value ID instead of string as search
+            operator    => 'equal',
+        }]
+    });
+    my $view = GADS::View->new(
+        filter      => $filter,
+        instance_id => $self->layout->instance_id,
+        layout      => $self->layout,
+        schema      => $self->schema,
+        user        => undef,
+    );
+    @retrieve_columns = ($column->id)
+        unless @retrieve_columns;
+    # Do not limit by user
+    local $GADS::Schema::IGNORE_PERMISSIONS_SEARCH = 1;
+    my $records = GADS::Records->new(
+        user    => $self->user,
+        rows    => 1,
+        view    => $view,
+        layout  => $self->layout,
+        schema  => $self->schema,
+        columns => \@retrieve_columns,
+    );
+
+    # Might be more, but one will do
+    $records->single;
 }
 
 sub _escape_like
@@ -2199,7 +2244,7 @@ sub _search_construct
             push @conditions, {
                 type     => $filter_operator,
                 operator => $operator,
-                s_field  => "value",
+                s_field  => $column->value_field,
             };
         }
         elsif ($operator eq ">" || $operator eq "<=")

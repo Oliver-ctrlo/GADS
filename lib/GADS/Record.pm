@@ -650,39 +650,14 @@ sub find_unique
     return $self->find_serial_id($value)
         if $column->id == $serial_col->id;
 
-    # First create a view to search for this value in the column.
-    my $filter = encode_json({
-        rules => [{
-            field       => $column->id,
-            id          => $column->id,
-            type        => $column->type,
-            value       => $value,
-            value_field => $column->value_field_as_index($value), # May need to use value ID instead of string as search
-            operator    => 'equal',
-        }]
-    });
-    my $view = GADS::View->new(
-        filter      => $filter,
-        instance_id => $self->layout->instance_id,
-        layout      => $self->layout,
-        schema      => $self->schema,
-        user        => undef,
-    );
-    @retrieve_columns = ($column->id)
-        unless @retrieve_columns;
-    # Do not limit by user
-    local $GADS::Schema::IGNORE_PERMISSIONS_SEARCH = 1;
     my $records = GADS::Records->new(
         user    => undef, # Do not want to limit by user
-        rows    => 1,
-        view    => $view,
         layout  => $self->layout,
         schema  => $self->schema,
-        columns => \@retrieve_columns,
     );
 
-    # Might be more, but one will do
-    my $r = $records->single;
+    my $record = $records->find_unique($column, $value, @retrieve_columns);
+
     # Horrible hack. The record of layout will have been overwritten during the
     # above searches. Needs to be changed back to this record.
     $self->layout->record($self);
@@ -690,8 +665,8 @@ sub find_unique
     # user on which find_unique() was called. This affects imports, in ensuring
     # that the user of the new record version is as per the user running the
     # import
-    $r->user($self->user) if $r;
-    return $r;
+    $record->user($self->user) if $record;
+    return $record;
 }
 
 sub clear
@@ -1044,8 +1019,10 @@ sub clone
         schema => $self->schema,
     );
     $cloned->fields({});
-    $cloned->fields->{$_} = $self->fields->{$_}->clone(fresh => 1, record => $cloned, current_id => undef, record_id => undef)
-        foreach keys %{$self->fields};
+    $cloned->fields->{$_} = $self->layout->column($_)->user_can('write')
+        ? $self->fields->{$_}->clone(fresh => 1, record => $cloned, current_id => undef, record_id => undef)
+        : $self->initialise_field($_, record => $cloned)
+            foreach keys %{$self->fields};
     return $cloned;
 }
 
@@ -1064,7 +1041,7 @@ sub load_remembered_values
             # Set created date to latest time rather than time draft was saved,
             # in case used in any calculated values
             my $record_created_col = $self->layout->column_by_name_short('_created');
-            $self->initialise_field($self->fields, $record_created_col->id);
+            $self->fields->{$record_created_col->id} = $self->initialise_field($record_created_col->id);
             $self->remove_id;
             return;
         }
@@ -1329,7 +1306,7 @@ sub initialise
     my $fields = {};
     foreach my $column ($self->layout->all(include_internal => 1))
     {
-        $self->initialise_field($fields, $column->id);
+        $fields->{$column->id} = $self->initialise_field($column->id);
     }
 
     $self->columns_retrieved_do([ $self->layout->all(include_internal => 1) ]);
@@ -1337,27 +1314,28 @@ sub initialise
 }
 
 sub initialise_field
-{   my ($self, $fields, $id) = @_;
+{   my ($self, $col_id, %options) = @_;
     my $layout = $self->layout;
-    my $column = $layout->column($id);
+    my $column = $layout->column($col_id);
     if ($self->linked_id && $column->link_parent)
     {
-        $fields->{$id} = $self->linked_record->fields->{$column->link_parent->id};
+        return $self->linked_record->fields->{$column->link_parent->id};
     }
     else {
+        my $record = $options{record} || $self;
         my $f = $column->class->new(
-            record           => $self,
-            record_id        => $self->record_id,
+            record           => $record,
+            record_id        => $record->record_id,
             column           => $column,
-            schema           => $self->schema,
-            layout           => $self->layout,
-            datetime_parser  => $self->schema->storage->datetime_parser,
+            schema           => $record->schema,
+            layout           => $record->layout,
+            datetime_parser  => $record->schema->storage->datetime_parser,
         );
         # Unlike other fields this has a default value, so set it now.
         # XXX Probably need to do created_by field as well.
         $f->set_value(DateTime->now, is_parent_value => 1)
             if $column->name_short && $column->name_short eq '_created';
-        $fields->{$id} = $f;
+        return $f;
     }
 }
 
@@ -2720,12 +2698,15 @@ sub pdf
 }
 
 sub get_report
-{   my ($self, $report_id) = @_;
+{   my ($self, $report_id, $user) = @_;
 
     my $report = $self->schema->resultset('Report')->find($report_id)
         or error __x"Report ID {id} not found", id => $report_id;
 
-    $report->create_pdf($self);
+    error __x"Report ID {id} not found", id => $report_id
+        if $report->deleted;
+
+    $report->create_pdf($self,$user);
 }
 
 # Delete the record entirely from the database, plus its parent current (entire
@@ -2835,5 +2816,53 @@ sub _purge_record_values
     })->delete;
 }
 
-1;
+sub presentation_map_columns {
+    my ($self, %options) = @_;
 
+    my @columns = @{delete $options{columns}};
+
+    # When rendering a grouped column, in order to show all its filters, it may
+    # also need the filter values of grouped columns before it. Pass these in
+    # using the data key
+    my $mapping_done;
+    my @mapped = map {
+        my $pres = $mapping_done->{$_->id} = $self->fields->{$_->id}->presentation;
+        $_->presentation(datum_presentation => $pres, data => $mapping_done, %options);
+    } @columns;
+
+    return @mapped;
+}
+
+sub get_topics {
+    my $self = shift;
+    my $presentation_columns = shift;
+    my %topics; my $order; my %has_editable;
+    foreach my $col (@$presentation_columns)
+    {
+        my $topic_id = $col->{topic_id} || 0;
+        if (!$topics{$topic_id})
+        {
+            # Topics are listed in the order of their first column to appear in
+            # the layout
+            $order++;
+            $topics{$topic_id} = {
+                order    => $order,
+                topic    => $col->{topic},
+                columns  => [],
+                topic_id => $topic_id,
+            }
+        }
+        $has_editable{$topic_id} = 1
+            if !$col->{readonly};
+        push @{$topics{$topic_id}->{columns}}, $col;
+    }
+
+    my @topics = sort { $a->{order} <=> $b->{order} } values %topics;
+
+    $_->{has_editable} = $has_editable{$_->{topic_id}}
+        foreach @topics;
+
+    return @topics
+}
+
+1;

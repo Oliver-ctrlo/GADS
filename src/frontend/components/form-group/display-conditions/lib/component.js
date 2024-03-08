@@ -1,5 +1,7 @@
 import { Component } from 'component'
-import queryBuilder from '@lol768/jquery-querybuilder-no-eval/dist/js/query-builder.standalone.min'
+import '@lol768/jquery-querybuilder-no-eval/dist/js/query-builder.standalone.min'
+import 'bootstrap-select/dist/js/bootstrap-select'
+import { refreshSelects } from 'components/form-group/common/bootstrap-select'
 
 class DisplayConditionsComponent extends Component {
   constructor(element)  {
@@ -12,6 +14,8 @@ class DisplayConditionsComponent extends Component {
     const builderData = this.el.data()
     const filters = JSON.parse(Buffer.from(builderData.filters, 'base64'))
     if (!filters.length) return
+
+    refreshSelects(this.el)
 
     this.el.queryBuilder({
       filters: filters,

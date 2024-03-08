@@ -8,9 +8,6 @@
 @import '~datatables.net-responsive-bs4/css/responsive.bootstrap4.min.css';
 @import '~datatables.net-rowreorder-bs4/css/rowReorder.bootstrap4.min.css';
 
-// Typeahead
-@import '~jquery-typeahead/dist/jquery.typeahead.min.css';
-
 // React-grid-layout
 @import 'external/react-grid-layout/styles.min.css';
 @import '~react-resizable/css/styles.css';
@@ -39,6 +36,7 @@
 @import 'dashboard/lib/react/header';
 @import 'dashboard/lib/react/index';
 @import 'data-table/data-table';
+@import 'data-table/table-modal';
 @import 'data-table/data-table-row';
 @import 'dropdown/dropdown';
 @import 'dropdown/dropdown-group';
@@ -47,6 +45,7 @@
 @import 'form-group/date-range/date-range';
 @import 'form-group/query-builder/query-builder';
 @import 'form-group/fieldset';
+@import 'form-group/filter/filter';
 @import 'form-group/form-group';
 @import 'form-group/input/input';
 @import 'form-group/input/datepicker';
@@ -78,3 +77,6 @@
 @import 'timeline/timeline';
 @import 'user/user';
 @import 'markdown/markdown';
+@import 'filedrag/filedrag';
+@import 'typeahead/typeahead';
+@import 'form-group/input-group/input-group';

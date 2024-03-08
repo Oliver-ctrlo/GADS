@@ -1,8 +1,9 @@
 import { Component } from 'component'
 import { initValidationOnField, validateCheckboxGroup } from 'validation'
 import initDateField from 'components/datepicker/lib/helper'
-import 'jquery-typeahead'
 import 'blueimp-file-upload'
+import TypeaheadBuilder from 'util/typeahead'
+import { stopPropagation, fromJson, hideElement, showElement } from 'util/common'
 
 class InputComponent extends Component {
     constructor(element)  {
@@ -13,6 +14,10 @@ class InputComponent extends Component {
         this.btnReveal = this.el.find('.input__reveal-password')
         this.input = this.el.find('.form-control')
         this.initInputPassword()
+      } else if (this.el.hasClass('input--logo')) {
+        this.logoDisplay = this.el.parent().find('img');
+        this.fileInput = this.el.find('.form-control-file')
+        this.initInputLogo();
       } else if (this.el.hasClass('input--document')) {
         this.fileInput = this.el.find('.form-control-file')
         this.initInputDocument()
@@ -28,27 +33,74 @@ class InputComponent extends Component {
       } else if (this.el.hasClass('input--autocomplete')) {
         this.input = this.el.find('.form-control')
         this.initInputAutocomplete()
-      } 
+      }
 
       if (this.el.hasClass("input--required")) {
         initValidationOnField(this.el)
       }
     }
 
+    initInputLogo() {
+      if(this.logoDisplay.attr('src') == '#') this.logoDisplay.hide();
+
+      this.el.find('.file').hide();
+
+      this.fileInput.on('change', (ev) => {
+        stopPropagation(ev);
+        const url = this.el.data("fileupload-url")
+
+        const formData = new FormData();
+        formData.append('file', this.el.find('input[type="file"]')[0].files[0]);
+        formData.append('csrf_token', $('body').data('csrf'));
+
+        fetch(url,{
+          method: 'POST',
+          body: formData,
+        }).then((response) => {
+          if (response.ok) {
+            return response.json();
+          }
+          throw new Error(`Error: ${response.status} ${response.statusText}`);
+        }).then((data) => {
+          if (data && !data.error) {
+            this.logoDisplay.attr('src', data.url);
+            this.logoDisplay.show();
+          } else if (data.error) {
+            throw new Error(`Error: ${data.text}`);
+          }else{
+            throw new Error(`Error: No data returned`);
+          }
+        }).catch((error) => {
+          console.error(error);
+        });
+      });
+    }
+
     initInputDocument() {
       const url = this.el.data("fileupload-url")
-      const field = this.el.data("field")
-      const $fieldset = this.el.closest('.fieldset');
-      const $ul = $fieldset.find(".fileupload__files")
       const $progressBarContainer = this.el.find(".progress-bar__container")
       const $progressBarProgress = this.el.find(".progress-bar__progress")
       const $progressBarPercentage = this.el.find(".progress-bar__percentage")
       const self = this
 
+      const tokenField = this.el.closest('form').find('input[name="csrf_token"]');
+      const token = tokenField.val();
+      const dropTarget = this.el.closest('.file-upload');
+      if (dropTarget) {
+        const dragOptions = { allowMultiple: false };
+        dropTarget.filedrag(dragOptions).on('onFileDrop', (ev, file) => {
+          this.handleAjaxUpload(url, token, file);
+        });
+        this.error = dropTarget.parent().find('.upload__error');
+      } else throw new Error("Could not find file-upload element");
+
       this.el.fileupload({
         dataType: "json",
         url: url,
         paramName: "file",
+        options: {
+          dropTarget: undefined
+        },
 
         submit: function() {
           $progressBarContainer.css("display", "block");
@@ -73,33 +125,7 @@ class InputComponent extends Component {
           }
         },
         done: function(e, data) {
-          if (!self.el.data("multivalue")) {
-            $ul.empty();
-          }
-          var fileId = data.result.url.split("/").pop();
-          var fileName = data.files[0].name;
-
-          var $li = $(
-            `<li class="help-block">
-              <div class="checkbox">
-                <input type="checkbox" id="file-${fileId}" name="${field}" value="${fileId}" aria-label="${fileName}" data-filename="${fileName}" checked>
-                <label for="file-${fileId}">
-                  <span>Include file. Current file name: <a class="link" href="/file/${fileId}">${fileName}</a>.</span>
-                </label>
-              </div>
-            </li>`
-          );
-          $ul.append($li);
-          // Change event will alreayd have been triggered with initial file
-          // selection (XXX ideally remove this first trigger?). Trigger
-          // change again now that the full element has been recreated.
-          $ul.closest('.linkspace-field').trigger('change')
-          // .list class contains the checkboxes to be validated
-          validateCheckboxGroup($fieldset.find('.list'))
-          // Once a file has been uploaded, it will appear as a checkbox and
-          // the file input will still be empty. Remove the HTML required
-          // attribute so that the form can be submitted
-          $fieldset.find('input[type="file"]').removeAttr('required');
+          var $li = self.addFileToField({ id: data.result.id, name: data.result.filename })
         },
         fail: function(e, data) {
           const ret = data.jqXHR.responseJSON;
@@ -116,27 +142,18 @@ class InputComponent extends Component {
 
     initInputAutocomplete() {
       const self = this
-      $(self.input).typeahead({
-        minLength: 2,
-        delay: 500,
-        dynamic: true,
-        order: 'asc',
-        source: {
-          name: {
-            display: 'name',
-            ajax: {
-              type: 'GET',
-              url: self.getURL(),
-              dataType: 'json'
-            }
-          }
-        },
-        callback: {
-          onClickAfter (node, a, item, event) {
-            $(self.el).find('input[type="hidden"]').val(item.id)
-          }
-        }
-      })
+
+      const suggestionCallback = (suggestion) => {
+        $(self.el).find('input[type="hidden"]').val(suggestion.id)
+      }
+
+      const builder = new TypeaheadBuilder();
+      builder
+        .withInput($(self.input))
+        .withCallback(suggestionCallback)
+        .withAjaxSource(self.getURL())
+        .withName('users')
+        .build()
     }
 
     getURL() {
@@ -163,7 +180,77 @@ class InputComponent extends Component {
       this.btnReveal.click( (ev) => { this.handleClickReveal(ev) } )
     }
 
+    handleAjaxUpload(uri, csrf_token, file) {
+      try{
+        hideElement(this.error);
+        if (!file) throw new Error("No file provided");
+        const self = this;
+        const field = this.el.data("field")
+
+        const fileData = new FormData();
+        fileData.append("file", file);
+        fileData.append("csrf_token", csrf_token);
+        const request = new XMLHttpRequest();
+        request.open("POST", uri, true);
+        request.onreadystatechange = () => {
+            if (request.readyState === 4 && request.status === 200) {
+                const data = JSON.parse(request.responseText);
+                self.addFileToField({ id: data.id, name: data.filename });
+            } else if(request.readyState === 4 && request.status >= 400){
+                const response = fromJson(request.responseText);
+                if(response.is_error && response.message) self.showException(response.message);
+                else self.showException("An unexpected error occurred");
+            }
+        };
+        request.onerror=()=>{
+            self.showException("An unexpected error occurred");
+        };
+        request.send(fileData);
+      }catch(e){
+        this.showException(e);
+      }
+    }
+    
+    showException(e) {
+        this.error.html(e);
+        showElement(this.error);
+    }
+
+    handleFormUpload(file) {
+        if (!file) throw new Error("No file provided");
+        const form = this.el.closest('form');
+        const action = form.attr('action') ? window.location.href + form.attr('action') : window.location.href;
+        const method = form.attr('method') || 'GET';
+        const tokenField = form.find('input[name="csrf_token"]');
+        const token = tokenField.val();
+        const formData = new FormData();
+        formData.append('file', file);
+        if (method.toUpperCase() == 'POST') {
+            const request = new XMLHttpRequest();
+            const formData = new FormData();
+            request.open(method, action, true);
+            request.onreadystatechange = () => {
+                if (request.readyState === 4 && request.status === 200) {
+                    location.reload();
+                }
+            };
+            formData.append('file', file);
+            formData.append('csrf_token', token);
+            request.send(formData);
+        } else {
+            throw new Error("Method not supported");
+        }
+    }
+
     initInputFile() {
+        const dropTarget = this.el.closest('.file-upload');
+        if (dropTarget) {
+            const dragOptions = { allowMultiple: false };
+            dropTarget.filedrag(dragOptions).on('onFileDrop', (ev, file) => {
+                this.handleFormUpload(file);
+            });
+        } else throw new Error("Could not find file-upload element");
+
       this.fileInput.change( (ev) => { this.changeFile(ev) } )
       this.inputFileLabel.bind( 'keyup', (ev) => { this.uploadFile(ev)} )
 
@@ -205,6 +292,40 @@ class InputComponent extends Component {
       this.fileDelete.addClass("hidden");
       // TO DO: set fo us back to input__file-label 9without triggering keyup event on it)
     }
+
+    addFileToField(file) {
+      const $fieldset = this.el.closest('.fieldset');
+      const $ul = $fieldset.find(".fileupload__files")
+      const $field = this.el
+      const fileId = file.id
+      const fileName = file.name
+      const field = $fieldset.find('.input--file').data("field")
+      if (!this.el.data("multivalue")) {
+        $ul.empty();
+      }
+      const $li = $(
+        `<li class="help-block">
+          <div class="checkbox">
+            <input type="checkbox" id="file-${fileId}" name="${field}" value="${fileId}" aria-label="${fileName}" data-filename="${fileName}" checked>
+            <label for="file-${fileId}">
+              <span>Include file. Current file name: <a class="link" href="/file/${fileId}">${fileName}</a>.</span>
+            </label>
+          </div>
+        </li>`
+      );
+      $ul.append($li);
+      // Change event will alreayd have been triggered with initial file
+      // selection (XXX ideally remove this first trigger?). Trigger
+      // change again now that the full element has been recreated.
+      $ul.closest('.linkspace-field').trigger('change')
+      // .list class contains the checkboxes to be validated
+      validateCheckboxGroup($fieldset.find('.list'))
+      // Once a file has been uploaded, it will appear as a checkbox and
+      // the file input will still be empty. Remove the HTML required
+      // attribute so that the form can be submitted
+      $fieldset.find('input[type="file"]').removeAttr('required');
+    }
+
 }
 
 export default InputComponent

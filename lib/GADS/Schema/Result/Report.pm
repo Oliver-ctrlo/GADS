@@ -11,6 +11,7 @@ use warnings;
 
 use Log::Report 'linkspace';
 use CtrlO::PDF 0.06;
+use PDF::Table 0.11.0; # Needed for colspan feature
 use GADS::Config;
 use Moo;
 
@@ -39,6 +40,9 @@ __PACKAGE__->table("report");
     data_type: 'varchar'
     is_nullable: 0
     size: 128
+=head2 title
+    data_type: 'text'
+    is_nullable: 1
 =head2 description
     data_type: 'varchar'
     is_nullable: 1
@@ -62,15 +66,20 @@ __PACKAGE__->table("report");
 =head2 deleted
     data_type: 'datetime'
     is_nullable: 1
+=head2 security_marking
+    data_type: 'text'
+    is_nullable: 1
 =cut
 
 __PACKAGE__->add_columns(
     "id",
     { data_type => "bigint", is_auto_increment => 1, is_nullable => 0 },
     "name",
-    { data_type => "varchar", is_nullable => 0, size => 128 },
+    { data_type => "text", is_nullable => 0, size => 128 },
+    "title",
+    { data_type => "text", is_nullable => 1 },
     "description",
-    { data_type => "varchar", is_nullable => 1, size => 128 },
+    { data_type => "text", is_nullable => 1, size => 128 },
     "user_id",
     { data_type => "bigint", is_foreign_key => 1, is_nullable => 1 },
     "createdby",
@@ -88,7 +97,9 @@ __PACKAGE__->add_columns(
         data_type                 => "datetime",
         datetime_undef_if_invalid => 1,
         is_nullable               => 1
-    }
+    },
+    "security_marking",
+    { data_type => "text", is_nullable => 1 },
 );
 
 =head1 PRIMARY KEY
@@ -172,11 +183,13 @@ sub validate {
     my ( $self, $value, %options ) = @_;
 
     my $name        = $self->name;
+    my $title       = $self->title;
     my $instance_id = $self->instance_id;
     my $layouts     = $self->report_layouts;
 
-    error __ "No name given" unless $name;
-    error __ "You must provide at least one row to display in the report"
+    error __"No name given" unless $name;
+    error __"No title given" unless $title;
+    error __"You must provide at least one row to display in the report"
       unless $layouts;
 
     0;
@@ -191,30 +204,6 @@ has record_id => (
     required => 0,
 );
 
-=head2 _data
-This is the data for the report as pulled from the instance record identfied by the Record Id
-=cut
-
-sub _data
-{   my ($self, $record) = @_;
-
-    my $result = [];
-
-    my $layouts = $self->report_layouts;
-    my $user    = $self->user;
-
-    my $gads_layout = $record->layout;
-
-    while ( my $layout = $layouts->next ) {
-        my $column = $gads_layout->column( $layout->layout_id, permission => 'read' ) or next;
-        my $datum  = $record->get_field_value($column);
-        my $data   = { 'name' => $layout->layout->name, 'value' => $datum || '' };
-        push( @{$result}, $data );
-    }
-
-    return $result;
-}
-
 =head1 Object functions
 =head2 Update Report
 Function to update a report - it requires the schema and any updated fields to be passed in and will return a report object
@@ -225,16 +214,19 @@ sub update_report {
 
     my $guard = $self->result_source->schema->txn_scope_guard;
 
-    $self->update( { name => $args->{name} } )
-      if $args->{name};
-    $self->update( { description => $args->{description} } )
-      if $args->{description};
+    $self->update(
+        {
+            name             => $args->{name},
+            title            => $args->{title},
+            description      => $args->{description},
+            security_marking => $args->{security_marking},
+        }
+    );
 
     my $layouts = $args->{layouts};
 
     foreach my $layout (@$layouts) {
-        $self->find_or_create_related( 'report_layouts',
-            { layout_id => $layout } );
+        $self->find_or_create_related( 'report_layouts', { layout_id => $layout } );
     }
 
     my $search = {};
@@ -270,31 +262,34 @@ Function to create a PDF of the report - it will return a PDF object
 =cut
 
 sub create_pdf
-{   my ($self, $record) = @_;
+{   my ($self, $record, $user) = @_;
 
-    my $dateformat = GADS::Config->instance->dateformat;
-    my $now        = DateTime->now;
-    $now->set_time_zone('Europe/London');
-    my $now_formatted = $now->format_cldr($dateformat) . " at " . $now->hms;
-    my $updated =
-      $self->created->format_cldr($dateformat) . " at " . $self->created->hms;
+    my $marking = $self->_read_security_marking;
+    my $logo = $self->instance->site->create_temp_logo;
 
-    my $config = GADS::Config->instance;
-    my $header = $config && $config->gads && $config->gads->{header};
-    my $pdf    = CtrlO::PDF->new(
-        header => $header,
-        footer => "Downloaded by " . $self->user->value . " on $now_formatted",
-    );
+    my $pdf;
+    my $topmargin = 0;
+
+    if($logo) {
+        $pdf = CtrlO::PDF->new(
+            header => $marking,
+            footer => $marking,
+            logo   => $logo,
+        );
+        # Adjust the top margin to allow for the logo - 30px allows the table (below the logo) to not encroach on the logo when rendered
+        # This is used rather than overcomplicating and using image size to centre the header, and then having to "drop" the table down to avoid the logo
+        $topmargin = -30;
+    }
+    else {
+        $pdf = CtrlO::PDF->new(
+            header => $marking,
+            footer => $marking,
+        );
+    }
 
     $pdf->add_page;
-    $pdf->heading( $self->name );
-    $pdf->heading( $self->description, size => 14 ) if $self->description;
-
-    my $fields = [ [ 'Field', 'Value' ] ];
-
-    my $data = $self->_data($record);
-
-    push( @{$fields}, [ $_->{name}, $_->{value} ] ) foreach (@$data);
+    $pdf->heading( $self->title || $self->name, topmargin => $topmargin );
+    $pdf->text($self->description , size => 14 ) if $self->description;
 
     my $hdr_props = {
         repeat    => 1,
@@ -304,12 +299,63 @@ sub create_pdf
         fg_color  => '#ffffff',
     };
 
-    $pdf->table(
-        data         => $fields,
-        header_props => $hdr_props,
-        border_c     => '#007c88',
-        h_border_w   => 1,
-    );
+    my %include = map { $_->layout_id => 1 } $self->report_layouts;
+    my $result = [grep $include{$_->id}, @{$record->columns_render}];
+
+    my @cols = $record->presentation_map_columns(columns=>$result);
+    my @topics = $record->get_topics(\@cols);
+
+    my $i = 0;
+    foreach my $topic (@topics) {
+        my $topic_name = $topic->{topic} ? $topic->{topic}->name : 'Other';
+        my $fields = [ [ $topic_name ] ];
+        
+        my $width = 0;
+        foreach my $col (@{$topic->{columns}}) {
+            if($col->{data}->{selected_values}) {
+                my $first=1;
+                foreach my $c (@{$col->{data}->{selected_values}}) {
+                    my $values = $c->{values};
+                    $width = $width<(scalar(@$values)+1)? scalar(@$values)+1 : $width;
+                    push @$fields, [$first?$col->{name}:'',@$values];
+                    $first=0;
+                }
+            } else {
+                if($col->{data}->{value}) {
+                    push @$fields, [ $col->{name}, $col->{data}->{value} || "" ];
+                } else {
+                    push @$fields, [ $col->{name}, $col->{data}->{grade} ];
+                }
+                $width = 2 if $width < 2;
+            }
+        }
+
+        my $cell_props = [];
+        foreach my $d (@$fields)
+        {
+            my $has = @$d;
+            # $max_fields does not include field name
+            my $gap = $width - $has + 1;
+            push @$d, undef for (1..$gap);
+            push @$cell_props, [
+                (undef) x ($has - 1),
+                {colspan => $gap + 1}
+            ];
+        }
+
+        $pdf->table(
+            data         => $fields,
+            header_props => $hdr_props,
+            border_c     => '#007C88',
+            h_border_w   => 1,
+            cell_props   => $cell_props,
+        );
+    }
+
+    my $now = DateTime->now;
+    my $format = GADS::Config->instance->dateformat;
+    $pdf->text ('Last edited by '.$self->createdby->value.' on '.$record->created->format_cldr($format).' at '.$record->created->hms, size=>10);
+    $pdf->text ('Report generated by '.$user->value.' on '.$now->format_cldr($format).' at '.$now->hms, size => 10);
 
     $pdf;
 }
@@ -333,6 +379,12 @@ sub fields_for_render {
     } $layout->all( user_can_read => 1 );
 
     return \@fields;
+}
+
+sub _read_security_marking {
+    my $self = shift;
+
+    return $self->security_marking || $self->instance->read_security_marking;
 }
 
 1;

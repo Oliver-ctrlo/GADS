@@ -15,6 +15,10 @@ class TreeComponent extends Component {
       this.id = this.$treeContainer.data('column-id')
       this.field = this.$treeContainer.data('field')
       this.endNodeOnly = this.$treeContainer.data('end-node-only')
+      // Used to only trigger change events once the tree has finished
+      // initializing (i.e. change events that are actually initialited by a
+      // user making a selection)
+      this.initialized = false
 
       this.initTree()
     }
@@ -44,7 +48,10 @@ class TreeComponent extends Component {
     }
 
     this.$treeContainer.on('select_node.jstree', (e, data) => this.handleSelect(e, data))
-    this.$treeContainer.on('ready.jstree', () => initValidationOnField(this.el))
+    this.$treeContainer.on('ready.jstree', () => {
+        initValidationOnField(this.el)
+        this.initialized = true
+    })
     this.$treeContainer.on('changed.jstree', () => validateTree(this.el))
 
     this.$treeContainer.jstree(treeConfig)
@@ -95,9 +102,12 @@ class TreeComponent extends Component {
     const self = this
 
     $.each(selectedElms, (_, selectedElm) => {
-      // store the selected values in hidden fields as children of the element
+      // store the selected values in hidden fields as children of the element.
+      // Keep them in the same order as the tree (although we don't specify the
+      // order of multivalue values, it makes sense to have them in the same
+      // order in this case for calc values)
       const node = $(`<input type="hidden" class="selected-tree-value" name="${self.field}" value="${selectedElm.id}" />`)
-        .insertAfter(self.$treeContainer)
+        .appendTo(self.$treeContainer.closest('.tree'))
       const text_value = data.instance.get_path(selectedElm, '#')
       node.data('text-value', text_value)
     })
@@ -108,7 +118,8 @@ class TreeComponent extends Component {
       self.$treeContainer.after(`<input type="hidden" class="selected-tree-value" name="${self.field}" value="" />`)
     }
 
-    self.$treeContainer.trigger('change')
+    if (this.initialized)
+      self.$treeContainer.trigger('change')
   }
 
   setupJStreeButtons($treeContainer) {
