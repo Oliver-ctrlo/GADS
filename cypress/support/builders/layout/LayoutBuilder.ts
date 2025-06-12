@@ -178,14 +178,16 @@ class DropdownLayoutBuilder extends LayoutBuilderBase implements IDropdownLayout
             .contains("Field settings for dropdown list")
             .click();
         // Enter the options
-        for(let i; i<this.options.values.length-1; i++) {
+        for(let i=0; i<this.options.length-1; i++) {
             cy.get("input[name='enumval']")
+                .last()
                 .type(this.options[i]);
             cy.get("button")
                 .contains("Add a value")
                 .click();
         }
         cy.get("input[name='enumval']")
+            .last()
             .type(this.options[this.options.length-1]);
     }
 }

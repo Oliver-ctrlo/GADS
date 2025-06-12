@@ -7,6 +7,7 @@ describe("Layout creation tests", () => {
   before(() => {
     cy.log("login")
       .login(goodUser, goodPassword);
+        cy.log("update user groups").addUserToDefaultGroup("test@example.com", "check");
     cy.log("setup table permissions");
     const permissionObject = {};
     ["Bulk import records", "Purge deleted records", "Delete records", "Bulk delete records"].forEach((permissionName) => {
@@ -139,5 +140,6 @@ describe("Layout creation tests", () => {
 
   it(`Should clear all permissions for ${table_shortname}`, () => {
     cy.clearAllTablePermissions(table_shortname);
+    cy.addUserToDefaultGroup("test@example.com", "uncheck");
   });
 });

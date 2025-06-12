@@ -525,10 +525,10 @@ Cypress.Commands.add("bulkImportRecords", (csvFilePath = 'cypress/fixtures/Impor
     cy.get('a.link--plain').contains(/skipped:\s*0/);
 });
 
-Cypress.Commands.add("addUserToDefaultGroup", (user: string) =>
+Cypress.Commands.add("addUserToDefaultGroup", (user: string, CheckOrUncheck: 'check' | 'uncheck') =>
     cy.visit('http://localhost:3000/user_overview/')
         .get('td').contains(user).click()
-        .get('input#groups_1').check({ force: true })
+        .get('input#groups_1')[CheckOrUncheck]({ force: true })
         .get('button[name="submit"]').click()
 );
 

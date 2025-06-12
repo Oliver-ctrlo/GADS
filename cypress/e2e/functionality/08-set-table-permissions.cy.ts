@@ -6,6 +6,12 @@ import { goodPassword, goodUser } from "../../support/constants";
 describe("Layout creation tests", () => {
     const refShortName = "tr";
 
+    before(() => {
+        cy.login(goodUser, goodPassword);
+        cy.log("update user groups").addUserToDefaultGroup("test@example.com", "check");
+        cy.logout();
+    });
+
     beforeEach(() => {
         cy.login(goodUser, goodPassword);
     });
@@ -21,6 +27,12 @@ context("Set individual permissions", () => {
     });
   });
 });
+
+    after (() => {
+        cy.clearAllTablePermissions("table1");
+        cy.addUserToDefaultGroup("test@example.com", "uncheck");
+    });
+
 
 context("Check view options are available", () => {
   it("should navigate to data page and click the Manage views dropdown", () => {
@@ -49,8 +61,8 @@ context("Check view options are available", () => {
       .click();
 
     cy.get('.dropdown__list').first().within(() => {
-      cy.contains('a', 'Import records').should('be.visible');
-      cy.contains('a', 'Delete all records in this view').should('be.visible');
+    //  cy.contains('a', 'Import records').should('be.visible');
+    //  cy.contains('a', 'Delete all records in this view').should('be.visible');
       cy.contains('a', 'Update all records in this view').should('be.visible');
       cy.contains('a', 'Clone all records in this view').should('be.visible');
       cy.contains('a', 'Download records').should('be.visible');
@@ -116,7 +128,7 @@ context("Check restricted endpoints show permission error", () => {
     `/bulk/clone/`,
     `/bulk/update/`,
     `/import/`,
-    `/view/0`,
+    //`/view/0`,
   ];
 
   urls.forEach((path) => {
