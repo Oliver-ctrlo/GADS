@@ -26,7 +26,7 @@ use Log::Report 'linkspace';
 use Scope::Guard qw(guard);
 use Text::CSV;
 use Moo;
-use MooX::Types::MooseLike::Base qw/:all/;
+use MooX::Types::MooseLike::Base qw/Bool ArrayRef HashRef Int Bool/;
 
 has schema => (
     is       => 'ro',
@@ -566,7 +566,7 @@ sub _import_rows
                             $record->initialise;
                         }
                     }
-                    elsif (my $existing = $record->find_unique($self->layout->column($self->update_unique), $unique_value, @all_column_ids))
+                    elsif (my $existing = $record->find_unique($self->layout->column($self->update_unique), $unique_value, retrieve_columns => \@all_column_ids))
                     {
                         $record = $existing;
                     }

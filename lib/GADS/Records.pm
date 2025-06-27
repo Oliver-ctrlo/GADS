@@ -24,6 +24,7 @@ use DateTime::Format::Strptime qw( );
 use DBIx::Class::Helper::ResultSet::Util qw(correlate);
 use DBIx::Class::ResultClass::HashRefInflator;
 use GADS::Config;
+use GADS::Filter;
 use GADS::Graph::Data;
 use GADS::Record;
 use GADS::Timeline;
@@ -37,10 +38,10 @@ use Scalar::Util qw(looks_like_number);
 use Text::CSV::Encoded;
 use Tree::DAG_Node;
 use Moo;
-use MooX::Types::MooseLike::Base qw(:all);
+use MooX::Types::MooseLike::Base qw(Maybe Str ArrayRef HashRef Bool Int);
 use MooX::Types::MooseLike::DateTime qw/DateAndTime/;
 
-with 'GADS::RecordsJoin', 'GADS::Role::Presentation::Records';
+with 'GADS::RecordsJoin', 'GADS::Role::Presentation::Records', 'GADS::Helper::ConditionBuilder';
 
 # Preferably this is passed in to prevent extra
 # DB reads, but loads it if it isn't
@@ -230,26 +231,27 @@ sub _view_limits_search
                 # Ignore any permissions on this view, as otherwise an
                 # administrator-defined limited view of records may not take
                 # effect
-                push @search, $self->_search_construct($decoded, $self->layout, %options, ignore_perms => 1);
+                push @search, $self->_search_construct($decoded, %options, ignore_perms => 1);
             }
         }
     }
-    my $limit = [ '-or' => \@search ];
+    my @limit = @search ? ('-or' => \@search) : ();
 
     if (my $filter = $self->_view_limit_extra && $self->_view_limit_extra->filter)
     {
         my $decoded = $filter->as_hash;
         if (keys %$decoded)
         {
+            my @s = $self->_search_construct($decoded, %options, ignore_perms => 1);
             # Get the user search criteria. As above we do not let permissions
             # affect these admin-defined views.
-            $limit = [
-                -and => [ $limit, $self->_search_construct($decoded, $self->layout, %options, ignore_perms => 1) ],
-            ];
+            @limit = @limit ? (
+                -and => [ [@limit], @s ],
+            ) : @s;
         }
     }
 
-    return $limit;
+    return @limit;
 }
 
 has from => (
@@ -470,7 +472,7 @@ sub search_query
     push @search, { "$current.instance_id" => $self->layout->instance_id };
     push @search, $self->common_search($current);
     push @search, $self->record_later_search(%options, linked => $linked, search => 1)
-        unless $options{chronology};
+        unless $options{chronology} || $options{no_record_later};
     push @search, {
         "$record_single.created" => { '<=' => $self->rewind_formatted },
     } if $self->rewind;
@@ -568,7 +570,7 @@ sub linked_hash
         };
     }
     else {
-        return {};
+        return ();
     }
 }
 
@@ -609,8 +611,8 @@ sub search_view
             });
             push @searches, $self->record_later_search(linked => 1, search => 1);
             # Perform search construct twice, to ensure all value joins are consistent numbers
-            $self->_search_construct($decoded, $self->layout, ignore_perms => 1, user => $user);
-            push @searches, $self->_search_construct($decoded, $self->layout, ignore_perms => 1, user => $user);
+            $self->_search_construct($decoded, ignore_perms => 1, user => $user);
+            push @searches, $self->_search_construct($decoded, ignore_perms => 1, user => $user);
             my $i = 0; my @ids;
             while ($i < @$current_ids)
             {
@@ -659,20 +661,37 @@ sub search_view
     @foundin;
 }
 
+
 sub find_unique
-{   my ($self, $column, $value, @retrieve_columns) = @_;
+{   my ($self, $column, $value, %params) = @_;
+
+    my @retrieve_columns = $params{retrieve_columns} && @{$params{retrieve_columns}};
 
     # First create a view to search for this value in the column.
-    my $filter = encode_json({
-        rules => [{
-            field       => $column->id,
-            id          => $column->id,
-            type        => $column->type,
-            value       => $value,
-            value_field => $column->value_field_as_index($value), # May need to use value ID instead of string as search
-            operator    => 'equal',
-        }]
+    my @rules = ({
+        field       => $column->id,
+        id          => $column->id,
+        type        => $column->type,
+        value       => $value,
+        value_field => $column->value_field_as_index($value), # May need to use value ID instead of string as search
+        operator    => 'equal',
     });
+
+    push @rules, ({
+        field       => $self->layout->column_id->id,
+        id          => $self->layout->column_id->id,
+        type        => 'string',
+        value       => $params{ignore_current_id},
+        operator    => 'not_equal',
+    }) if $params{ignore_current_id};
+
+    my $filter = GADS::Filter->new(
+        as_hash => {
+            rules     => \@rules,
+            condition => 'AND',
+        },
+    );
+
     my $view = GADS::View->new(
         filter      => $filter,
         instance_id => $self->layout->instance_id,
@@ -682,9 +701,7 @@ sub find_unique
     );
     @retrieve_columns = ($column->id)
         unless @retrieve_columns;
-    # Do not limit by user
-    local $GADS::Schema::IGNORE_PERMISSIONS_SEARCH = 1;
-    my $records = GADS::Records->new(
+    GADS::Records->new(
         user    => $self->user,
         rows    => 1,
         view    => $view,
@@ -692,9 +709,6 @@ sub find_unique
         schema  => $self->schema,
         columns => \@retrieve_columns,
     );
-
-    # Might be more, but one will do
-    $records->single;
 }
 
 sub _escape_like
@@ -919,44 +933,33 @@ sub _me_created_date
     })->get_column('created')->as_query;
 }
 
-# Additional columns that will be added to a query as +select. As these refer
-# to earlier records than those being retrieved, these need to be performed as
-# correlated subqueries
-sub _created_plus_select
+sub _me_created_user
 {   my $self = shift;
-    [
-        {
-            ""  => $self->_me_created_date,
-            -as => 'record_created_date',
+    $self->schema->resultset('Record')->search({
+        'me_created.id' => {
+            -in => $self->schema->resultset('Current')
+                ->correlate('records')
+                ->get_column('id')
+                ->min_rs->as_query,
         },
-        {
-            "" => $self->schema->resultset('Record')->search({
-                'me_created.id' => {
-                    -in => $self->schema->resultset('Current')
-                        ->correlate('records')
-                        ->get_column('id')
-                        ->min_rs->as_query,
-                },
-            },{
-                alias => 'me_created',
-            })->get_column('createdby')->as_query,
-            -as => 'record_created_user',
+    },{
+        alias => 'me_created',
+    })->get_column('createdby')->as_query;
+}
+
+sub _me_created_value
+{   my $self = shift;
+    $self->schema->resultset('Record')->search({
+        'me_created_value.id' => {
+            -in => $self->schema->resultset('Current')
+                ->correlate('records')
+                ->get_column('id')
+                ->min_rs->as_query,
         },
-        {
-            "" => $self->schema->resultset('Record')->search({
-                'me_created_value.id' => {
-                    -in => $self->schema->resultset('Current')
-                        ->correlate('records')
-                        ->get_column('id')
-                        ->min_rs->as_query,
-                },
-            },{
-                alias => 'me_created_value',
-                join  => 'createdby',
-            })->get_column('createdby.value')->as_query,
-            -as => 'record_created_value',
-        }
-    ];
+    },{
+        alias => 'me_created_value',
+        join  => 'createdby',
+    })->get_column('createdby.value')->as_query;
 }
 
 # Produce a standard set of results without grouping
@@ -991,11 +994,26 @@ sub _current_ids_rs
         select => [
             'me.id',
         ],
-        '+select' => $self->_created_plus_select,
+        '+select' => [
+            $self->has_created_time(search => 1, sort => 1, %limit) ? {
+                ""  => $self->_me_created_date,
+                -as => 'record_created_date',
+            } : (),
+            $self->has_created_user(search => 1, sort => 1, %limit) ? {
+                ""  => $self->_me_created_user,
+                -as => 'record_created_user',
+            } : (),
+            $self->has_created_user(search => 1, sort => 1, %limit) ? {
+                ""  => $self->_me_created_value,
+                -as => 'record_created_value',
+            } : (),
+        ],
         '+as' => [
-            'record_created_date',
-            'record_created_user',
-            'record_created_value',
+            $self->has_created_time(search => 1, sort => 1, %limit) ? 'record_created_date' : (),
+            $self->has_created_user(search => 1, sort => 1, %limit) ? (
+                'record_created_user',
+                'record_created_value',
+            ) : (),
         ],
         as => [
             'id',
@@ -1130,6 +1148,7 @@ sub _build_standard_results
         push @columns_fetch, {draftuser_id => "me.draftuser_id"};
         push @columns_fetch, {current_id => "$base.current_id"};
         push @columns_fetch, {created => "$base.created"};
+        push @columns_fetch, {createdby => "$base.createdby"};
         push @columns_fetch, {serial => "me.serial"};
         push @columns_fetch, {parent_id => "me.parent_id"};
         push @columns_fetch, "deletedby.$_" foreach @GADS::Column::Person::person_properties;
@@ -1139,7 +1158,27 @@ sub _build_standard_results
             {
                 join      => [@prefetches],
                 columns   => \@columns_fetch,
-                '+select' => $self->_created_plus_select,
+                '+select' => [
+                    $self->has_created_time(prefetch => 1, sort => 1, limit => $limit, page => $page) ? {
+                        ""  => $self->_me_created_date,
+                        -as => 'record_created_date',
+                    } : (),
+                    $self->has_created_user(prefetch => 1, sort => 1, limit => $limit, page => $page) ? {
+                        ""  => $self->_me_created_user,
+                        -as => 'record_created_user',
+                    } : (),
+                    $self->has_created_user(prefetch => 1, sort => 1, limit => $limit, page => $page) ? {
+                        ""  => $self->_me_created_value,
+                        -as => 'record_created_value',
+                    } : (),
+                ],
+                '+as' => [
+                    $self->has_created_time(prefetch => 1, sort => 1, limit => $limit, page => $page) ? 'record_created_date' : (),
+                    $self->has_created_user(prefetch => 1, sort => 1, limit => $limit, page => $page) ? (
+                        'record_created_user',
+                        'record_created_value',
+                    ) : (),
+                ],
                 order_by  => $self->order_by(prefetch => 1, limit => $limit, page => $page, retain_join_order => 1),
             },
         );
@@ -1214,7 +1253,7 @@ sub _build_standard_results
         my $rec = $records->{$index_id};
         my @children = map { $_->{id} } @{$rec->{currents}};
         # XXX Need to retrieve and set approval information if applicable
-        push @all, GADS::Record->new(
+        my $record = GADS::Record->new(
             schema                  => $self->schema,
             record                  => $rec,
             rewind                  => $self->rewind,
@@ -1233,8 +1272,10 @@ sub _build_standard_results
             set_deleted             => $rec->{deleted},
             set_deletedby           => $rec->{deletedby},
             set_record_created      => $rec->{record_created_date},
-            set_record_created_user => $rec->{record_created_user},
         );
+        $record->set_record_created_user($rec->{record_created_user})
+            if exists $rec->{record_created_user};
+        push @all, $record;
         push @created_ids, $rec->{record_created_user};
         push @record_ids, $rec->{id};
     }
@@ -1367,13 +1408,16 @@ sub fetch_multivalues
                     # we don't do this.
                     my %colsd;
 
+                    my $limit_rows = !$col->is_curcommon || $params{chronology} ? 0 : $col->limit_rows;
                     foreach my $val ($col->fetch_multivalues(
                             \@retrieve_ids,
                             is_draft     => $params{is_draft},
                             rewind       => $self->rewind, # Would be better in a context object
                             already_seen => $already_seen,
+                            limit_rows   => $limit_rows,
                     ))
                     {
+                        $val->{has_more} = 0 if !$limit_rows;
                         my $field = "field$val->{layout_id}";
                         next if $cols_done->{$parent_field_this}->{$val->{layout_id}};
                         $multi->{$parent_field_this}->{$val->{record_id}}->{$field} ||= [];
@@ -1514,11 +1558,92 @@ sub _build_count
 
     return $self->_search_all_fields->{count} if $self->search;
 
-    my $search_query = $self->search_query(search => 1, linked => 1);
-    my @joins        = $self->jpfetch(search => 1, linked => 0);
-    my @linked       = $self->linked_hash(search => 1, linked => 1);
+    # Try and make the count fast, only counting the current table itself if
+    # possible. We can look at only the current table if there is no filtering
+    # and if there is no other need to look at the records join (approval,
+    # rewind etc)
+    my ($search_query, $select);
+    if ($self->rewind || $self->_query_params(search => 1) || $self->_approval_query)
+    {
+        $search_query = $self->search_query(search => 1, linked => 1);
+        my @joins        = $self->jpfetch(search => 1, linked => 0);
+        my @linked       = $self->linked_hash(search => 1, linked => 1);
+        $select = {
+            join     => [
+                [@linked],
+                {
+                    'record_single' => [
+                        'record_later',
+                        @joins
+                    ],
+                },
+            ],
+            distinct => 1, # Otherwise multiple records returned for multivalue fields
+        };
+    }
+    else {
+        # record joins not needed, remove with fresh call
+        $search_query = $self->search_query(search => 1, linked => 1, no_record_later => 1);
+    }
+
     local $GADS::Schema::Result::Record::REWIND = $self->rewind_formatted
         if $self->rewind;
+
+    $self->schema->resultset('Current')->search(
+        [-and => $search_query], $select
+    )->count;
+}
+
+# Cache for exists() function
+has _exists_cache => (
+    is => 'rw',
+);
+
+# Whether any records exist in this set. As an optimisation, allow a new value
+# to be passed in multiple times, to save rebuilding the search query
+# everytime.
+sub exists
+{   my ($self, $value) = @_;
+
+    my (@joins, @linked, $search_query);
+
+    if (my $cache = $self->_exists_cache)
+    {
+        @joins        = @{$cache->{joins}};
+        @linked       = @{$cache->{linked}};
+        $search_query = $cache->{search_query};
+    }
+    else {
+        $search_query = $self->search_query(search => 1, linked => 1);
+        @joins        = $self->jpfetch(search => 1, linked => 0);
+        @linked       = $self->linked_hash(search => 1, linked => 1);
+        $self->_exists_cache({
+            joins        => \@joins,
+            linked       => \@linked,
+            search_query => $search_query,
+        });
+    }
+
+    # Hacky code to update search condition. Look for search condition of
+    # unique field and update its search value
+    foreach my $q (@$search_query)
+    {
+        next unless ref $q eq 'ARRAY';
+        my $next;
+        foreach my $q2 (@$q)
+        {
+            if ($next)
+            {
+                $q2->{'='} = $value;
+                undef $next;
+            }
+            if ($q2 =~ /^field/)
+            {
+                $next = 1;
+            }
+        }
+    }
+
     my $select = {
         join     => [
             [@linked],
@@ -1529,12 +1654,12 @@ sub _build_count
                 ],
             },
         ],
-        distinct => 1, # Otherwise multiple records returned for multivalue fields
+        rows => 1,
     };
 
-    $self->schema->resultset('Current')->search(
+    !! $self->schema->resultset('Current')->search(
         [-and => $search_query], $select
-    )->count;
+    )->get_column('me.id')->next;
 }
 
 sub _build_has_children
@@ -1799,19 +1924,18 @@ sub _query_params
         $self->_search_date($c, $search_date);
     }
 
-    my @limit;  # The overall limit, for example reduction by date range or approval field
     my @search; # The user search
     # The following code needs to be run twice, to make sure that join numbers
     # are worked out correctly. Otherwise, a search criteria might not take
     # into account a subsuquent sort, and vice-versa.
     for (1..2)
     {
-        @search = (); @limit = (); # Reset from first loop
+        @search = (); # Reset from first loop
         # Add any date ranges to the search from above
         if (@$search_date)
         {
-            my @res = ($self->_search_construct({condition => 'OR', rules => $search_date}, $layout, %options));
-            push @limit, @res if @res;
+            my @res = ($self->_search_construct({condition => 'OR', rules => $search_date}, %options));
+            push @search, @res if @res;
         }
 
         foreach my $additional (@{$self->additional_filters})
@@ -1826,7 +1950,7 @@ sub _query_params
                 value       => $additional->{value},
                 value_field => !$additional->{is_text} && $col->value_field_as_index($additional->{value}),
             };
-            push @limit, $self->_search_construct($f, $layout, %options);
+            push @search, $self->_search_construct($f, %options);
         }
 
         # Now add all the filters as joins (we don't need to prefetch this data). However,
@@ -1841,7 +1965,7 @@ sub _query_params
                 if (keys %$decoded)
                 {
                     # Get the user search criteria
-                    @search = $self->_search_construct($decoded, $layout, %options);
+                    push @search, $self->_search_construct($decoded, %options);
                 }
             }
         }
@@ -1861,14 +1985,14 @@ sub _query_params
             layout_id => $fc->{layout_id},
             value     => { '!=' => undef },
         })->get_column('value')->all;
-        push @limit, {
+        push @search, {
             'me.id' => {
                 -in => \@cids,
             },
         };
     }
 
-    (@limit, @search);
+    @search;
 }
 
 sub _build__sorts
@@ -1963,11 +2087,11 @@ sub order_by
         : @{$self->_sorts};
 
     my @order_by; my %has_time;
-    my $random_sort = $self->schema->resultset('Current')->_rand_order_by;
     foreach my $s (@sorts)
     {
         if ($s->{type} eq 'random')
         {
+            my $random_sort = $self->schema->resultset('Current')->_rand_order_by;
             push @order_by, \$random_sort;
         }
         else {
@@ -2095,71 +2219,55 @@ sub order_by
     \@order_by;
 }
 
+sub filter_hook
+{   my ($self, $filter) = @_;
+    # Previous values for a group. This allows previous values to be
+    # searched only for a whole group (e.g. to include previous values only
+    # between certain edit dates). Construct the whole group as a
+    # GADS::Records and return that as a query
+    if ($filter->{rules} && $filter->{previous_values})
+    {
+        my $encoded = GADS::Filter->new(
+            as_hash => {%$filter, previous_values => 0}
+        );
+
+        my $records = GADS::Records->new(
+            schema       => $self->schema,
+            user         => $self->user,
+            layout       => $self->layout,
+            _view_limits => [], # Don't limit by view this as well, otherwise recursive loop happens
+            previous_values => 1,
+            view  => GADS::View->new(
+                filter      => $encoded,
+                instance_id => $self->layout->instance_id,
+                layout      => $self->layout,
+                schema      => $self->schema,
+                user        => $self->user,
+            ),
+        );
+
+        my $match = $filter->{previous_values} eq 'negative' ? '-not_in' : '-in';
+        return +{ 'me.id' => { $match => $records->_current_ids_rs->as_query } };
+    }
+}
+
 # $ignore_perms means to ignore any permissions on the column being
 # processed. For example, if the current user is updating a record,
 # we want to process columns that the user doesn't have access to
 # for things like alerts, but not for their normal viewing.
 sub _search_construct
-{   my ($self, $filter, $layout, %options) = @_;
+{   my ($self, $filter, %options) = @_;
+
+    $self->map_rules($filter, %options);
+}
+
+sub rule_to_condition
+{   my ($self, $filter, %options) = @_;
 
     my $ignore_perms = $options{ignore_perms}
         || $GADS::Schema::IGNORE_PERMISSIONS_SEARCH || $GADS::Schema::IGNORE_PERMISSIONS;
 
-    if (my $rules = $filter->{rules})
-    {
-        # Previous values for a group. This allows previous values to be
-        # searched only for a whole group (e.g. to include previous values only
-        # between certain edit dates). Construct the whole group as a
-        # GADS::Records and return that as a query
-        if ($filter->{previous_values})
-        {
-            my $encoded = GADS::Filter->new(
-                as_hash => {%$filter, previous_values => 0}
-            );
-
-            my $records = GADS::Records->new(
-                schema       => $self->schema,
-                user         => $self->user,
-                layout       => $self->layout,
-                _view_limits => [], # Don't limit by view this as well, otherwise recursive loop happens
-                previous_values => 1,
-                view  => GADS::View->new(
-                    filter      => $encoded,
-                    instance_id => $self->layout->instance_id,
-                    layout      => $self->layout,
-                    schema      => $self->schema,
-                    user        => $self->user,
-                ),
-            );
-
-            my $match = $filter->{previous_values} eq 'negative' ? '-not_in' : '-in';
-            return +{ 'me.id' => { $match => $records->_current_ids_rs->as_query } };
-        }
-        # Filter has other nested filters
-        my @final;
-        foreach my $rule (@$rules)
-        {
-            my @res = $self->_search_construct($rule, $layout, %options);
-            push @final, @res if @res;
-        }
-        my $condition = $filter->{condition} && $filter->{condition} eq 'OR' ? '-or' : '-and';
-        return @final ? ($condition => \@final) : ();
-    }
-
-    my %ops = (
-        equal            => '=',
-        greater          => '>',
-        greater_or_equal => '>=',
-        less             => '<',
-        less_or_equal    => '<=',
-        contains         => '-like',
-        not_contains     => '-not_like',
-        begins_with      => '-like',
-        not_begins_with  => '-not_like',
-        not_equal        => '!=',
-        is_empty         => '=',
-        is_not_empty     => '!=',
-    );
+    my $layout = $self->layout;
 
     my %permission = $ignore_perms ? () : (permission => 'read');
     my ($parent_column, $column);
@@ -2229,7 +2337,7 @@ sub _search_construct
     $filter_operator = 'contains'
         if $reverse && $filter_operator eq 'not_contains';
 
-    my $operator = $ops{$filter_operator}
+    my $operator = $self->field_map->{$filter_operator}
         or error __x"Invalid operator {filter}", filter => $filter_operator;
 
     my @conditions; my $gate = 'and';
@@ -2294,14 +2402,6 @@ sub _search_construct
         };
     }
 
-    my $vprefix = ''; my $vsuffix = '';
-    if ($operator eq '-like' || $operator eq '-not_like') # Do not apply to "contains" for daterange
-    {
-        $vprefix = '%'
-            if $filter_operator eq 'contains' || $filter_operator eq 'not_contains';
-        $vsuffix = '%';
-    }
-
     my @values;
 
     if ($filter_operator eq 'is_empty' || $filter_operator eq 'is_not_empty')
@@ -2313,7 +2413,7 @@ sub _search_construct
 
         foreach (@original_values)
         {
-            $_ = $vprefix.$_.$vsuffix;
+            $_ = $self->get_filter_value($filter_operator, $_, $column->return_type ne 'string');
 
             # This shouldn't normally happen, but sometimes we can end up with an
             # invalid search value, such as if the date format has changed and the
@@ -2395,7 +2495,8 @@ sub _search_construct
             %options
         );
     } @conditions;
-    @final = ("-$gate" => [@final]);
+    @final = ("-$gate" => [@final])
+        if @final != 2;
     my $parent_column_link = $parent_column && $parent_column->link_parent;;
     if ($parent_column_link || $column->link_parent)
     {
@@ -2621,7 +2722,7 @@ sub csv_line
     my @columns = @{$self->columns_render};
     my @items;
     push @items, $line->parent_id if $self->has_children;
-    push @items, map { $line->fields->{$_->id} } @columns;
+    push @items, map { $line->get_field_value($_) } @columns;
     my $csv = $self->_csv;
     $csv->combine(@items)
         or error __x"An error occurred producing a line of CSV: {err} {items}",

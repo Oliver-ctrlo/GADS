@@ -21,7 +21,6 @@ package GADS::Column;
 use JSON qw(decode_json encode_json);
 use Log::Report 'linkspace';
 use String::CamelCase qw(camelize);
-use GADS::DateTime;
 use GADS::DB;
 use GADS::Filter;
 use GADS::Groups;
@@ -32,12 +31,11 @@ use MIME::Base64 qw/encode_base64/;
 use Text::Markdown qw/markdown/;
 
 use Moo;
-use MooX::Types::MooseLike::Base qw/:all/;
+use MooX::Types::MooseLike::Base qw/Maybe Bool Int Str ArrayRef HashRef/;
 
 use List::Compare ();
 
-use namespace::clean; # Otherwise Enum clashes with MooseLike
-
+with 'GADS::DateTime';
 with 'GADS::Role::Presentation::Column';
 
 sub types
@@ -645,7 +643,7 @@ has value_field => (
 
 has retrieve_fields => (
     is  => 'lazy',
-    isa => ArrayRef,
+    isa => Maybe[ArrayRef],
 );
 
 sub _build_retrieve_fields
@@ -797,7 +795,7 @@ sub parse_date
     # Check whether it's a CURDATE first
     my $dt = GADS::Filter->parse_date_filter($value);
     return $dt if $dt;
-    $value && GADS::DateTime::parse_datetime($value);
+    $value && $self->parse_datetime($value);
 }
 
 sub _build_permissions
@@ -899,10 +897,10 @@ sub build_values
     $self->aggregate($original->{aggregate} || undef);
 
     # XXX Move to curval class
-    if ($self->type eq 'curval')
+    if ($self->type eq 'curval' || $self->type eq 'person')
     {
         $self->set_filter($original->{filter});
-        $self->multivalue(1) if $self->show_add && $self->value_selector eq 'noshow';
+        $self->multivalue(1) if $self->type eq 'curval' && $self->show_add && $self->value_selector eq 'noshow';
     }
 
 }
@@ -962,7 +960,7 @@ sub fetch_multivalues
         order_by => "me.".$self->value_field,
     };
 
-    my @cols = (@{$self->retrieve_fields}, 'id');
+    my @cols = $self->retrieve_fields ? (@{$self->retrieve_fields}, 'id') : ();
     my @cols_mapped = ('me.layout_id', 'me.record_id');
     if (ref $self->tjoin)
     {
@@ -1063,6 +1061,20 @@ sub delete
         error __x"The following graphs references this field: {graph}. Please update them before deletion."
             , graph => $g;
     }
+
+    my $rs = $self->schema->resultset('ReportLayout')->search({
+        layout_id => $self->id
+    }, {
+        prefetch  => 'report'
+    });
+    my $rs_live = $rs->search({'report.deleted' => undef});
+    if ( $rs_live->count ) {
+        my %reports = map { $_->report_id => $_->report } $rs_live->all;
+        my $r       = join( q{, }, map { $_->name } values %reports );
+        error __x"The following reports reference this field: \"{report}\". Please update them before deletion.", report => $r;
+    }
+
+    $_->delete for $rs->all;
 
     # Remove this column from any filters defined on views
     foreach my $filter ($self->schema->resultset('Filter')->search({
@@ -1765,4 +1777,3 @@ has notes => (
 );
 
 1;
-

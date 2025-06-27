@@ -20,7 +20,7 @@ package GADS::Datum::File;
 
 use Log::Report 'linkspace';
 use Moo;
-use MooX::Types::MooseLike::Base qw/:all/;
+use MooX::Types::MooseLike::Base qw/Bool ArrayRef/;
 use namespace::clean;
 
 extends 'GADS::Datum';
@@ -65,10 +65,13 @@ after set_value => sub {
         # single files.
         if (@values == 1 && @old == 1)
         {
-            my $old_content = $self->schema->resultset('Fileval')->find($old[0])->content;
+            my $old_value   = $self->schema->resultset('Fileval')->find($old[0]); # Only do one fetch here
+            my $old_content = $old_value->content;
+            my $old_name    = $old_value->name;
             $changed = 0 if $self->schema->resultset('Fileval')->search({
                 id      => $values[0],
                 content => $old_content,
+                name    => $old_name
             })->count;
         }
     }
@@ -131,6 +134,12 @@ has files => (
 sub _build_files
 {   my $self = shift;
 
+    return [+{
+        id => -1,
+        name => 'Purged',
+        mimetype => 'text/plain',
+    }] if $self->is_purged;
+
     my @return;
 
     if ($self->has_init_value)
@@ -155,6 +164,20 @@ sub _build_files
     }
 
     return \@return;
+}
+
+sub _files_rs
+{   my $self = shift;
+    [$self->schema->resultset('File')->search({
+        record_id => $self->record_id,
+        layout_id => $self->column->id,
+    })->all];
+}
+
+sub is_purged {
+    my $self = shift;
+    my @files = @{$self->_files_rs};
+    return grep { $_->is_purged } @files;
 }
 
 sub _ids_to_files
@@ -203,11 +226,43 @@ sub _build__rset
     $self->schema->resultset('Fileval')->find($id);
 }
 
-has content => (
+has single_name => (
+    is      => 'rw',
+    lazy    => 1,
+    builder => sub {
+        $_[0]->_rset && $_[0]->_rset->name;
+    },
+);
+
+has single_mimetype => (
+    is      => 'rw',
+    lazy    => 1,
+    builder => sub {
+        $_[0]->_rset && $_[0]->_rset->mimetype;
+    },
+);
+
+has single_content => (
     is      => 'rw',
     lazy    => 1,
     builder => sub {
         $_[0]->_rset && $_[0]->_rset->content;
+    },
+);
+
+has single_id => (
+    is      => 'rw',
+    lazy    => 1,
+    builder => sub {
+        $_[0]->_rset && $_[0]->_rset->id;
+    },
+);
+
+has single_rset => (
+    is      => 'rw',
+    lazy    => 1,
+    builder => sub {
+        $_[0]->_rset;
     },
 );
 

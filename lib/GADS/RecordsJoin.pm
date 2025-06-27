@@ -22,7 +22,7 @@ use Data::Compare;
 use Data::Dumper;
 use Log::Report 'linkspace';
 use Moo::Role;
-use MooX::Types::MooseLike::Base qw(:all);
+use MooX::Types::MooseLike::Base qw(ArrayRef);
 
 my $debug = 0;
 
@@ -99,8 +99,7 @@ sub _add_jp
         if $column->link_parent && $column->link_parent->instance_id == $column->instance_id;
 
     my $key;
-    my $toadd = $column->tjoin(all_fields => $options{all_fields})
-        or return;
+    my $toadd = $column->tjoin(all_fields => $options{all_fields});
     ($key) = keys %$toadd if ref $toadd eq 'HASH';
 
     trace __x"Checking or adding {field} to the store", field => $column->field
@@ -117,7 +116,8 @@ sub _add_jp
             if $debug;
         if (
             ($key && ref $j->{join} eq 'HASH' && Compare($toadd, $j->{join}))
-            || $toadd eq $j->{join}
+            || ($toadd && $j->{join} && $toadd eq $j->{join})
+            || (!$toadd && $column->id == $j->{column}->id)
         )
         {
             trace __x"Possibly found, checking to see if parents match"
@@ -244,6 +244,16 @@ sub has_linked
     # as part of the standard query). The linked join is needed to retrieve the
     # linked record IDs.
     return !!grep $_->{linked}, @{$self->_jp_store};
+}
+
+sub has_created_time
+{   my ($self, %options) = @_;
+    !! grep $_->{column}->name_short && $_->{column}->name_short eq '_created', $self->_jpfetch(%options);
+}
+
+sub has_created_user
+{   my ($self, %options) = @_;
+    !! grep $_->{column}->name_short && $_->{column}->name_short eq '_created_user', $self->_jpfetch(%options);
 }
 
 sub record_later_search
@@ -435,7 +445,7 @@ sub _to_alt
 
 sub jpfetch
 {   my ($self, %options) = @_;
-    my @joins = map { $_->{join} } $self->_jpfetch(%options);
+    my @joins = grep $_, map { $_->{join} } $self->_jpfetch(%options);
     @joins = map { _to_alt($_) } @joins
         if $options{alt};
     return @joins;
@@ -449,7 +459,8 @@ sub columns_fetch
         next unless $jp->{prefetch};
         my $column = $jp->{column};
         my $table = $self->table_name($column, prefetch => 1, %options);
-        my @values = (@{$column->retrieve_fields}, 'id');
+        my $fields = $column->retrieve_fields or next;
+        my @values = (@$fields, 'id');
         push @prefetch, {$column->field.".$_" => "$table.$_"} foreach @values; # unless $column->is_curcommon;
         push @prefetch, $column->field.'.child_unique'
             if $column->userinput;
@@ -463,7 +474,8 @@ sub columns_fetch
                 my %opt = %options;
                 # delete $opt{search};
                 my $table = $self->table_name($column2, prefetch => 1, %opt, parent => $column);
-                my @values = (@{$column2->retrieve_fields}, 'id');
+                my $fields2 = $column2->retrieve_fields or next;
+                my @values = (@$fields2, 'id');
                 push @prefetch, {$column->field.".".$column2->field.".$_" => "$table.$_"} foreach @values;
             }
         }
@@ -548,7 +560,7 @@ sub table_name
 {   my ($self, $column, %options) = @_;
     if ($column->internal)
     {
-        return 'me' if $column->table eq 'Current';
+        return $options{no_current} ? 'current' : 'me' if $column->table eq 'Current';
         if ($column->sprefix eq 'record')
         {
             return $self->record_name(%options);
@@ -698,13 +710,14 @@ sub _find
     else {
         trace "This join is a standard join"
             if $debug;
-        $stash->{$jp->{join}}++;
+        $stash->{$jp->{join}}++
+            if $jp->{join};
         if ($jp->{parent} && !$stash->{parents_included}->{$jp->{parent}->id})
         {
             $stash->{value}++ if $jp->{parent}->value_field eq 'value';
             $stash->{parents_included}->{$jp->{parent}->id} = 1;
         }
-        if (!$options{find_value} && $needle->sprefix eq $jp->{join})
+        if (!$options{find_value} && $jp->{join} && $needle->sprefix eq $jp->{join})
         {
             # Single table join
             if (_compare_parents($options{parent}, $jp->{parent})

@@ -26,6 +26,7 @@ use File::Temp qw/ tempfile /;
 use GADS::Alert;
 use GADS::Approval;
 use GADS::Audit;
+use GADS::Layout;
 use GADS::Column;
 use GADS::Column::Autocur;
 use GADS::Column::Calc;
@@ -53,7 +54,6 @@ use GADS::Group;
 use GADS::Groups;
 use GADS::Import;
 use GADS::Instances;
-use GADS::Layout;
 use GADS::MetricGroup;
 use GADS::MetricGroups;
 use GADS::Record;
@@ -90,6 +90,11 @@ use Dancer2::Plugin::Auth::Extensible::Provider::DBIC 0.623;
 use Dancer2::Plugin::LogReport 'linkspace';
 
 use GADS::API; # API routes
+
+# YAML needs to save and load blessed objects for the sessio serializer (for
+# the notification messages). Since YAML 1.25 this is disabled by default, so
+# turn it on
+$YAML::LoadBlessed = 1;
 
 # Uncomment for DBIC traces
 #schema->storage->debugobj(new GADS::DBICProfiler);
@@ -152,7 +157,7 @@ hook before => sub {
     schema->site_id(undef);
 
     # See if there are multiple sites. If so, find site and configure in schema
-    if (schema->resultset('Site')->count > 1 && request->dispatch_path !~ m{/invalidsite})
+    if (schema->resultset('Site')->count > 1 && request->path !~ m{/invalidsite})
     {
         my $site = schema->resultset('Site')->search({
             host => request->base->host,
@@ -233,6 +238,9 @@ hook before => sub {
     _audit_log()
         unless request->path =~ m!^/(record|record_body)/!;
 
+    response_header "X-Frame-Options" => "DENY" # Prevent clickjacking
+        unless request->uri eq '/aup_text'; # Except AUP, which will be in an iframe
+
     # The following use logged_in_user so as not to apply for API requests
     if (logged_in_user)
     {
@@ -262,25 +270,14 @@ hook before => sub {
                     unless request->uri eq '/myaccount' || request->uri eq '/logout';
         }
 
-        response_header "X-Frame-Options" => "DENY" # Prevent clickjacking
-            unless request->uri eq '/aup_text' # Except AUP, which will be in an iframe
-                || request->path eq '/file'; # Or iframe posts for file uploads (hidden iframe used for IE8)
-
         # CSP
         response_header "Content-Security-Policy" => "script-src 'self';";
 
-        # Make sure we have suitable persistent hash to update. All these options are
-        # used as hashrefs themselves, so prevent trying to access non-existent hash.
         my $persistent = session 'persistent';
 
         if (my $instance_id = param('instance'))
         {
             session 'search' => undef;
-        }
-        elsif (!$persistent->{instance_id})
-        {
-            $persistent->{instance_id} = var('instances')->all->[0]->instance_id
-                if @{var('instances')->all};
         }
 
         if (var 'layout') {
@@ -328,9 +325,7 @@ hook before_template => sub {
         $tokens->{instance_name} = var('layout')->name if var('layout');
         $tokens->{user}          = $user;
         $tokens->{search}        = session 'search';
-        # Somehow this sets the instance_id session if no persistent session exists
-        $tokens->{instance_id}   = session('persistent')->{instance_id}
-            if session 'persistent';
+        $tokens->{instance_id}   = session('persistent')->{instance_id};
         $tokens->{user_can_edit}   = $layout && $layout->user_can('write_existing');
         $tokens->{user_can_create} = $layout && $layout->user_can('write_new');
         $tokens->{show_link}       = rset('Current')->next ? 1 : 0;
@@ -343,6 +338,9 @@ hook before_template => sub {
 
     # Base 64 encoder for use in templates
     $tokens->{b64_filter} = sub { encode_base64(encode_json shift, '') };
+
+    $tokens->{actions} = session 'actions';
+    session->delete('actions');
 
     # This line used to be pre-request. However, occasionally errors have been
     # experienced with pages not submitting CSRF tokens. I think these may have
@@ -1380,6 +1378,10 @@ any ['get', 'post'] => '/settings/audit/?' => require_role audit => sub {
             to     => param('to'),
         }
     }
+    elsif (defined(param('clear')))
+    {
+        session 'audit_filtering' => undef;
+    }
 
     $audit->filtering(session 'audit_filtering')
         if session 'audit_filtering';
@@ -1556,8 +1558,9 @@ any ['get', 'post'] => '/user_requests/' => require_any_role [qw/useradmin super
                 if logged_in_user->id == $delete_id;
 
         my $usero = rset('User')->find($delete_id);
+        my $email_reject_text = param('reject_reason');
 
-        if (process( sub { $usero->retire(send_reject_email => 1) }))
+        if (process( sub { $usero->retire(send_reject_email => 1, email_reject_text => $email_reject_text) }))
         {
             $audit->login_change("User ID $delete_id deleted");
             return forwardHome(
@@ -1612,7 +1615,7 @@ any ['get', 'post'] => '/user/:id' => require_any_role [qw/useradmin superadmin/
             view_limits           => [body_parameters->get_all('view_limits')],
             groups                => [body_parameters->get_all('groups')],
         );
-        $values{permissions} = [body_parameters->get_all('permission')]
+        $values{permissions} = [body_parameters->get_all('permissions')]
             if logged_in_user->permission->{superadmin};
 
         if (process sub {
@@ -1676,7 +1679,22 @@ get '/file/?' => require_login sub {
     };
 };
 
-any ['get', 'post'] => '/file/:id?' => require_login sub {
+get '/file/:id?' => require_login sub {
+    my $id = route_parameters->get('id')
+        or error "File ID missing";
+
+    return send_file( \"Purged File", content_type => "text/plain", filename => "purged" ) if $id == -1;
+
+    my $file = $id =~ /^[0-9]+$/
+        && schema->resultset('Fileval')->find_with_permission($id, logged_in_user)
+            or error __x"File ID {id} cannot be found", id => $id;
+
+    # Call content from the Datum::File object, which will ensure the user has
+    # access to this file.
+    send_file( \($file->single_content), content_type => $file->single_mimetype, filename => $file->single_name );
+};
+
+post '/file/:id?' => require_login sub {
 
     # File upload through the "manage files" interface
     if (my $upload = upload('file'))
@@ -1696,52 +1714,68 @@ any ['get', 'post'] => '/file/:id?' => require_login sub {
         }
     }
 
-    # ID will either be in the route URL or as a delete parameter
-    my $id = route_parameters->get('id') || body_parameters->get('delete')
-        or error "File ID missing";
+    # Otherwise assume delete
+    error __"You do not have permission to delete files"
+        unless logged_in_user->permission->{superadmin};
+    my $id = body_parameters->get('delete')
+        or error "File ID missing for deletion request";
 
-    # Need to get file details first, to be able to populate
-    # column details of applicable.
+    # Assume no access control needed for superadmin
     my $fileval = $id =~ /^[0-9]+$/ && schema->resultset('Fileval')->find($id)
         or error __x"File ID {id} cannot be found", id => $id;
 
-    # Attached to a record value?
-    my ($file_rs) = $fileval->files; # In theory can be more than one, but not in practice (yet)
-    my $file = GADS::Datum::File->new(ids => $id);
-    # Get appropriate column, if applicable (could be unattached document)
-    # This will control access to the file
-    if ($file_rs && $file_rs->layout_id)
+    if (process( sub { $fileval->delete }))
     {
-        my $layout = var('instances')->layout($file_rs->layout->instance_id);
-        $file->column($layout->column($file_rs->layout_id));
+        return forwardHome( { success => "File has been deleted successsfully" }, 'file/' );
     }
-    elsif (!$fileval->is_independent)
-    {
-        # If the file has been uploaded via a record edit and it hasn't been
-        # attached to a record yet (or the record edit was cancelled) then do
-        # not allow access
-        error __"Access to this file is not allowed"
-            unless $fileval->edit_user_id && $fileval->edit_user_id == logged_in_user->id;
-        $file->schema(schema);
-    }
-    else {
-        $file->schema(schema);
-    }
+};
 
-    if (body_parameters->get('delete'))
-    {
-        error __"You do not have permission to delete files"
-            unless logged_in_user->permission->{superadmin};
-        if (process( sub { $fileval->delete }))
-        {
-            return forwardHome( { success => "File has been deleted successsfully" }, 'file/' );
-        }
-    }
+put '/api/file/:id' => require_login sub {
+    my $id     = route_parameters->get('id');
+    my $is_new = param('is_new');
 
-    # Call content from the Datum::File object, which will ensure the user has
-    # access to this file. The other parameters are taken straight from the
-    # database resultset
-    send_file( \($file->content), content_type => $fileval->mimetype, filename => $fileval->name );
+    my $newname = param('filename')
+        or error __"Filename is required";
+
+    $filecheck->check_name($newname);
+
+    if ($is_new)
+    {
+        my $file = schema->resultset('Fileval')->find_with_permission($id, logged_in_user, new_file_only => 1)
+            or error __x"File ID {id} cannot be found", id => $id;
+
+        $file->single_rset->update({ name => $newname });
+
+        content_type 'application/json';
+
+        return encode_json({
+            id    => $file->single_id,
+            name  => $file->single_name,
+            is_ok => 1,
+        });
+    }
+    else
+    {
+        my $file = schema->resultset('Fileval')->find_with_permission($id, logged_in_user, 
+            rename_existing => 1)
+                or error __x"File ID {id} cannot be found", id => $id;
+
+        my $newFile = rset('Fileval')->create({
+            name           => $newname,
+            mimetype       => $file->single_mimetype,
+            content        => $file->single_content,
+            is_independent => 0,
+            edit_user_id   => logged_in_user->id,
+        });
+
+        content_type 'application/json';
+
+        return encode_json({
+            id    => $newFile->id,
+            name  => $newFile->name,
+            is_ok => 1,
+        });
+    }
 };
 
 # Use api route to ensure errors are returned as JSON
@@ -1762,10 +1796,18 @@ post '/api/file/?' => require_login sub {
 
     if (my $upload = upload('file'))
     {
-        my $mimetype = $filecheck->check_file($upload); # Borks on invalid file type
+        my $mimetype = $filecheck->check_file($upload, check_name => 0); # Borks on invalid file type
+        my $filename = $upload->filename;
+
+        # Remove any invalid characters from the new name - this will possibly be changed to an error going forward
+        # Due to dragging allowing (almost) any character it is decided that this would be best so users can input what
+        # they want, and the text be stripped on rename server-side
+        # Note: This regex should mirror the regex in GADS::Filecheck::check_name()
+        $filename =~ s/[^a-zA-Z0-9\._\-\(\) ]//g;
+
         my $file;
         if (process( sub { $file = rset('Fileval')->create({
-            name           => $upload->filename,
+            name           => $filename,
             mimetype       => $mimetype,
             content        => $upload->content,
             is_independent => 0,
@@ -1774,7 +1816,7 @@ post '/api/file/?' => require_login sub {
         {
             return encode_json({
                 id       => $file->id,
-                filename => $upload->filename,
+                filename => $filename,
                 url      => "/file/".$file->id,
                 is_ok    => 1,
             });
@@ -1896,7 +1938,7 @@ any qr{/(record|history|purge|purgehistory)/([0-9]+)} => require_login sub {
         return send_file(\$pdf, content_type => 'application/pdf', filename => "Record-".$record->current_id.".pdf" );
     }
 
-    if (query_parameters->get('report') && !$record->layout->no_download_pdf)
+    if (query_parameters->get('report'))
     {
         my $report_id = query_parameters->get('report');
         my $pdf = $record->get_report($report_id, $user)->content;
@@ -2259,7 +2301,7 @@ prefix '/:layout_name' => sub {
     any ['get', 'post'] => '/data' => require_login sub {
 
         my $layout = var('layout') or pass;
-
+        
         my $user   = logged_in_user;
 
         my @additional_filters;
@@ -2320,7 +2362,7 @@ prefix '/:layout_name' => sub {
             else {
                 my $input = param('rewind_date');
                 $input   .= ' ' . (param('rewind_time') ? param('rewind_time') : '23:59:59');
-                my $dt    = GADS::DateTime::parse_datetime($input)
+                my $dt    = GADS::DateTime::parse_datetime(undef, $input)
                     or error __x"Invalid date or time: {datetime}", datetime => $input;
                 session rewind => $dt;
             }
@@ -2700,46 +2742,10 @@ prefix '/:layout_name' => sub {
                };
             }
 
-            my $pages = $records->pages;
-
-            my $subset = {
-                rows  => session('rows'),
-                pages => $pages,
-                page  => $page,
-            };
-            if ($pages > 50)
-            {
-                my @pnumbers = (1..5);
-                if ($page-5 > 6)
-                {
-                    push @pnumbers, '...';
-                    my $max = $page + 5 > $pages ? $pages : $page + 5;
-                    push @pnumbers, ($page-5..$max);
-                }
-                else {
-                    push @pnumbers, (6..15);
-                }
-                if ($pages-5 > $page+5)
-                {
-                    push @pnumbers, '...';
-                    push @pnumbers, ($pages-4..$pages);
-                }
-                elsif ($pnumbers[-1] < $pages)
-                {
-                    push @pnumbers, ($pnumbers[-1]+1..$pages);
-                }
-                $subset->{pnumbers} = [@pnumbers];
-            }
-            else {
-                $subset->{pnumbers} = [1..$pages];
-            }
-
             my @columns = @{$records->columns_render};
             $params->{user_can_edit}        = $layout->user_can('write_existing');
-            $params->{sort}                 = $records->sort_first;
-            $params->{subset}               = $subset;
+            $params->{sort}                 = $records->sort;
             $params->{aggregate}            = $records->aggregate_presentation;
-            $params->{count}                = $records->count;
             $params->{columns}              = [ map $_->presentation(
                 group            => $records->is_group,
                 group_col_ids    => $records->group_col_ids,
@@ -2822,13 +2828,12 @@ prefix '/:layout_name' => sub {
             my $user   = logged_in_user;
             my $layout = var('layout') or pass;
 
-            return forwardHome(
-                { danger => 'You do not have permission to edit reports' } )
+            return forwardHome( { danger => 'You do not have permission to edit reports' } )
               unless $layout->user_can("layout");
 
             my $base_url = request->base;
 
-            my $reports = $layout->reports;
+            my $reports = $layout->reports(all => 1);
 
             if (my $report_id = body_parameters->get('delete'))
             {
@@ -2863,8 +2868,9 @@ prefix '/:layout_name' => sub {
                 header_back_url => "${base_url}table",
                 reports         => $reports,
                 breadcrumbs     => [
-                    Crumb( $base_url . "table/", "Tables" ),
-                    Crumb( "",                   "Table: " . $layout->name )
+                    Crumb($base_url."table/", "Tables"),
+                    Crumb("$base_url" . $layout->identifier . '/data', "Table: " . $layout->name),
+                    Crumb("", "Reports")
                 ],
                 security_marking => $security_marking,
             };
@@ -2888,6 +2894,7 @@ prefix '/:layout_name' => sub {
                 my $checkbox_fields    = [body_parameters->get_all('checkboxes')];
                 my $security_marking   = body_parameters->get('security_marking');
                 my $instance           = $layout->instance_id;
+                my $groups             = [body_parameters->get_all('groups')];
 
                 my $report = schema->resultset('Report')->create_report(
                     {
@@ -2899,28 +2906,32 @@ prefix '/:layout_name' => sub {
                         createdby        => $user,
                         layouts          => $checkbox_fields,
                         security_marking => $security_marking,
+                        groups           => $groups,
                     }
                 );
 
                 my $lo = param 'layout_name';
-                return forwardHome( { success => "Report created" },
-                    "$lo/report" );
+                return forwardHome( { success => "Report created" }, "$lo/report" );
             }
 
             my $records = [ $layout->all( user_can_read => 1 ) ];
 
             my $base_url = request->base;
+            my $groups = [ $user->groups_viewable ];
 
             my $params = {
-                header_type       => 'table_tabs',
+                header_type     => 'table_tabs',
                 layout_obj      => $layout,
                 layout          => $layout,
                 header_back_url => "${base_url}table",
                 viewtype        => 'add',
                 fields          => $records,
+                groups          => $groups,
                 breadcrumbs     => [
-                    Crumb( $base_url . "table/", "Tables" ),
-                    Crumb( "",                   "Table: " . $layout->name )
+                    Crumb($base_url."table/", "Tables"),
+                    Crumb("$base_url" . $layout->identifier . '/data', "Table: " . $layout->name),
+                    Crumb($base_url . $layout->identifier . '/report', "Reports"),
+                    Crumb("", "Add Report"),
                 ],
             };
 
@@ -2946,6 +2957,7 @@ prefix '/:layout_name' => sub {
                 my $checkboxes         = [body_parameters->get_all('checkboxes')];
                 my $security_marking   = body_parameters->get('security_marking');
                 my $instance           = $layout->instance_id;
+                my $groups             = [body_parameters->get_all('groups')];
 
                 my $report_id = param('id');
 
@@ -2959,6 +2971,7 @@ prefix '/:layout_name' => sub {
                         description      => $report_description,
                         layouts          => $checkboxes,
                         security_marking => $security_marking,
+                        groups           => $groups,
                     }
                 );
 
@@ -2975,6 +2988,8 @@ prefix '/:layout_name' => sub {
 
             my $fields = $result->fields_for_render($layout);
 
+            my $groups = [ $user->groups_viewable ];
+
             my $params = {
                 header_type     => 'table_tabs',
                 layout_obj      => $layout,
@@ -2983,9 +2998,12 @@ prefix '/:layout_name' => sub {
                 report          => $result,
                 fields          => $fields,
                 viewtype        => 'edit',
+                groups          => $groups,
                 breadcrumbs     => [
-                    Crumb( $base_url . "table/", "Tables" ),
-                    Crumb( "",                   "Table: " . $layout->name )
+                    Crumb($base_url."table/", "Tables"),
+                    Crumb("$base_url" . $layout->identifier . '/data', "Table: " . $layout->name),
+                    Crumb($base_url . $layout->identifier . '/report', "Reports"),
+                    Crumb("", "Edit Report"),
                 ],
             };
 
@@ -3022,6 +3040,73 @@ prefix '/:layout_name' => sub {
         content_type 'application/json';
         encode_json($json);
 
+    };
+
+    any [ 'get', 'post' ] => '/historic_purge/' => require_login sub {
+        my $layout = var('layout') or pass;
+
+        forwardHome({ danger => 'You do not have permission to access this page.' })
+            unless $layout->user_can('purge');
+
+        my $user = logged_in_user;
+        my $view = current_view($user, $layout);
+
+        my %params = (
+            user   => $user,
+            layout => $layout,
+            schema => schema,
+            view   => $view,
+        );
+
+        my $records = GADS::Records->new(%params);
+        my @columns = grep { !$_->internal } @{ $records->columns_render };
+        my $columns_selected = +{};
+
+        if (defined param('stage1'))
+        {
+            $columns_selected->{$_} = 1 foreach body_parameters->get_all('column_id');
+
+            @columns = grep { $columns_selected->{$_->{id}} } @columns;
+
+            my $table_data = [];
+
+            while (my $record = $records->single)
+            {
+                my @mapped_columns =$record->presentation_map_columns(columns => \@columns);
+
+                my $values = {};
+
+                foreach my $column (@mapped_columns)
+                {
+                    $values->{$column->{id}} = $column->{data}->{value} || "No value";
+                }
+
+                push @$table_data, {
+                    current_id => $record->current_id,
+                    values  => $values
+                };
+            }
+
+            return template "historic_purge/confirm" => { table_data => $table_data, columns => \@columns };
+        }
+        elsif (defined param('purge'))
+        {
+            my @current_ids = body_parameters->get_all('current_id');
+            my @columns_purge = body_parameters->get_all('columns_selected');
+
+            $columns_selected->{$_} = 1 for @columns_purge;
+
+            if ( process( sub { schema->resultset('Current')->historic_purge($user, \@current_ids, \@columns_purge) } ) )
+            {
+                return forwardHome({ success => "Records have now been purged" }, $layout->identifier . '/data');
+            }
+        }
+
+        return template "historic_purge/initial" => { 
+            columns_view => \@columns, 
+            count => $records->count, 
+            columns_selected => $columns_selected 
+        };
     };
 
     any ['get', 'post'] => '/purge/?' => require_login sub {
@@ -3071,9 +3156,16 @@ prefix '/:layout_name' => sub {
             view_limit_extra_id => undef, # Override any value that may be set
         );
 
+        my $base_url = request->base;
+
         my $params = {
             page    => 'purge',
             records => $records->presentation(purge => 1),
+            breadcrumbs     => [
+                Crumb($base_url."table/", "Tables"),
+                Crumb("$base_url" . $layout->identifier . '/data', "Table: " . $layout->name),
+                Crumb("", "Purge records")
+            ],
         };
 
         template 'purge' => $params;
@@ -3675,6 +3767,10 @@ prefix '/:layout_name' => sub {
                     my @curval_field_ids = body_parameters->get_all('curval_field_ids');
                     $column->curval_field_ids([@curval_field_ids]);
                 }
+                elsif ($column->type eq "person")
+                {
+                    $column->filter->as_json(param 'people-display');
+                }
                 elsif ($column->type eq "autocur")
                 {
                     my @curval_field_ids = body_parameters->get_all('autocur_field_ids');
@@ -3729,7 +3825,17 @@ prefix '/:layout_name' => sub {
             $header_type = 'table_tabs';
         }
 
+        my $site = var 'site';
 
+        # Populate filters for people fields
+        my @user_fields = map {
+            +{
+                id    => $_->{name},
+                label => $_->{description},
+                type  => 'string',
+            },
+        } $site->user_fields;
+        $params->{people_fields}                = encode_base64(encode_json(\@user_fields));
         $params->{groups}                       = GADS::Groups->new(schema => schema);
         $params->{permissions}                  = [GADS::Type::Permissions->all];
         $params->{permission_mapping}           = GADS::Type::Permissions->permission_mapping;
@@ -4344,7 +4450,7 @@ prefix '/:layout_name' => sub {
 
         return to_json {
             error   => 0,
-            records => [ $column->values_beginning_with($query, noempty => query_parameters->get('noempty')) ]
+            records => [ $column->values_beginning_with($query, noempty => query_parameters->get('noempty'), use_id => query_parameters->get('use_id') ) ]
         }
     };
 
@@ -4571,6 +4677,7 @@ sub _process_edit
     );
     $params{layout} = var('layout') if var('layout'); # Used when creating a new record
 
+    my $actions;
     my $layout;
 
     if (my $delete_id = param 'delete')
@@ -4628,8 +4735,8 @@ sub _process_edit
             my $newv;
             if ($modal)
             {
-                next unless defined query_parameters->get($col->field);
-                $newv = [query_parameters->get_all($col->field)];
+                next unless defined body_parameters->get($col->field);
+                $newv = [body_parameters->get_all($col->field)];
             }
             else {
                 next unless defined body_parameters->get($col->field);
@@ -4648,7 +4755,7 @@ sub _process_edit
                     }
                 }
                 else {
-                    $failed = !process( sub { $datum->set_value($newv) } ) || $failed;
+                    $failed = !process( sub { $datum->set_value($newv, draft => defined(param 'draft')) } ) || $failed;
                 }
             }
         }
@@ -4657,7 +4764,8 @@ sub _process_edit
         {
             # The "source" parameter is user input, make sure still valid
             my $source_curval = $layout->column(param('source'), permission => 'read');
-            try { $record->write(dry_run => 1, parent_curval => $source_curval) };
+            my %options = (dry_run => 1, parent_curval => $source_curval);
+            try { $record->write(%options) };
             if (my $e = $@->wasFatal)
             {
                 push @validation_errors, $e->reason eq 'PANIC' ? 'An unexpected error occurred' : $e->message;
@@ -4669,7 +4777,7 @@ sub _process_edit
                 message => $message,
                 # Send values back to browser to display on main record. Only
                 # include ones that user has access to
-                values  => +{ map { $_->field => $record->fields->{$_->id}->as_string } @{$source_curval->curval_fields} },
+                values  => +{ map { $_->field => $record->get_field_value($_)->as_string } @{$source_curval->curval_fields} },
             });
             return ($return, undef, 1);
         }
@@ -4696,6 +4804,9 @@ sub _process_edit
                 my $forward = (!$id && $layout->forward_record_after_create) || param('submit') eq 'submit-and-remain'
                     ? 'record/'.$record->current_id
                     : $layout->identifier.'/data';
+                $actions->{clear_saved_values} = $id ? $id: 0;
+                session 'actions' => $actions;
+
                 return forwardHome(
                     { success => 'Submission has been completed successfully for record ID '.$record->current_id }, $forward );
             }
@@ -4781,6 +4892,9 @@ sub _process_edit
         $params->{content_block_custom_classes} = 'content-block--footer';
     }
 
+    $params->{clone_from} = $clone_from
+        if $clone_from;
+
     $params->{modal_field_ids} = encode_json $layout->column($modal)->curval_field_ids
         if $modal;
 
@@ -4789,5 +4903,17 @@ sub _process_edit
     return ($params, $options);
 
 }
+
+Sub::Install::install_sub({
+    code => sub {
+        my $self= shift;
+        my $clone = $self->clone;
+        $clone->time_zone->is_floating && $clone->set_time_zone('UTC');
+        $clone->set_time_zone('Europe/London');
+        $clone->strftime('%e %b %Y %H:%M:%S');
+    },
+    into => 'DateTime',
+    as => 'gads_time',
+});
 
 true;

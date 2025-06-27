@@ -11,6 +11,8 @@
     class="[% IF edit_modal %]curval-edit-form[% ELSE %]form-edit[% END %]"
     method="post"
     enctype="multipart/form-data"
+    [% IF cur_id %]data-current-id="[% cur_id %]"[% END %]
+    [% IF clone_from %]data-from="[% clone_from %]"[% END %]
     [%
       IF edit_modal;
         action = cur_id
@@ -19,7 +21,6 @@
     %]
         action="[% action %]" [%# This form also used for bulk actions %]
         data-curval-id="[% edit_modal %]"
-        data-current-id="[% cur_id %]"
         data-modal-field-ids="[% modal_field_ids %]"
         data-instance-name="[% layout.identifier %]"
     [% END; %]
@@ -242,10 +243,14 @@
               });
             ELSIF NOT view_modal;
               left_buttons.push({
-                type   = "link",
-                target = url.page _ "/" _ layout_obj.identifier _ "/data",
+                type   = "button",
                 class  = "btn btn-cancel btn-js-cancel",
                 label  = "Cancel"
+                button_type = "button"
+                data_attributes = [{
+                  name  = "href"
+                  value = url.page _ "/" _ layout_obj.identifier _ "/data"
+                }]
               });
           
               IF record.is_draft;
@@ -312,9 +317,11 @@
 </div>
 [% END %]
 
-[% INCLUDE wizard/curval.tt modalId="curvalModal"; %]
-[% INCLUDE wizard/record_details.tt modalId="detailsModal"; %]
-[% INCLUDE wizard/read_more.tt modalId = "readMore"; %]
+[% UNLESS edit_modal %]
+    [% INCLUDE wizard/curval.tt modalId="curvalModal"; %]
+    [% INCLUDE wizard/record_details.tt modalId="detailsModal"; %]
+    [% INCLUDE wizard/read_more.tt modalId = "readMore"; %]
+[% END %]
 
 [%
   IF record.user_can_delete;
@@ -335,6 +342,21 @@
     INCLUDE wizard/delete.tt
       modalId     = "deleteModal"
       label       = "Delete - record"
+      description = modal_description;
+  END;
+
+%]
+
+[%
+  IF editable AND NOT edit_modal;
+    modal_description = "There are unsaved values from the last time you edited
+    " _ layout.record_name_with_article _ ". Would you like to restore the
+    values into this " _ layout.record_name _ "? The values will not be saved
+    until you submit this " _ layout.record_name _ ".";
+
+    INCLUDE wizard/restore_values.tt
+      modalId     = "restoreValuesModal"
+      label       = "Restore unsaved record values"
       description = modal_description;
   END;
 
@@ -497,11 +519,14 @@
 
 [% BLOCK print_field; %]
   <div
-      class="[% IF col.show_in_edit %]form-group[% END %]
-      linkspace-field"
+      class="[% IF col.show_in_edit %]form-group [% END %]linkspace-field[% IF col.show_in_edit==2 %] hidden[% END %]"
+      [% IF col.show_in_edit==2 %]aria-hidden="true"[% END %]
       data-column-id="[% col.id %]"
       data-column-type="[% col.type %]"
       data-value-selector="[% col.value_selector %]"
+      data-show-add="[% col.show_add %]"
+      data-modal-field-ids="[% col.modal_field_ids %]"
+      data-curval-instance-name="[% col.layout_parent.identifier %]"
       data-name="[% col.name | html %]"
       data-name-short="[% col.name_short %]"
         [% col.lookup_endpoint && 'data-lookup-endpoint="' _ col.lookup_endpoint _ '"' %]
@@ -861,7 +886,11 @@
                   label   = "Include file."
                   value   = file.id
                   checked = 1
-                  filter  = "html";
+                  filter  = "html"
+                  data_attributes = [{
+                    name  = "filename"
+                    value = file.name
+                  }];
           
               '</span>';
               '<span class="list__value">';
@@ -872,8 +901,10 @@
               '</span>';
             '</li>';
             END;
+             '</li>';
           '</ul>';
        '</div>';
+       
        '<div class="file-upload">';
         INCLUDE fields/file.tt
           id               = col.id
@@ -1016,7 +1047,7 @@
       IF col.type == "date";
         field_input_class = "input--date";
         field_placeholder = config.dateformat_datepicker;
-        dateformat        = config.dateformat_datepicker;
+        field_dateformat  = config.dateformat_datepicker;
   
         IF col.show_datepicker AND !readonly;
           field_input_class = field_input_class _ " input--datepicker";
@@ -1040,6 +1071,7 @@
           field_input_class = field_input_class
           input_class  = field_input_class
           placeholder  = field_placeholder
+          dateformat   = field_dateformat
           help_text    = col.description
           popover_body = col.helptext_html
           filter       = "html"
@@ -1055,6 +1087,7 @@
           value        = editvalue.html_form.shift
           input_class  = field_input_class
           placeholder  = field_placeholder
+          dateformat   = field_dateformat
           help_text    = col.description
           popover_body = col.helptext_html
           filter       = "html"
@@ -1084,8 +1117,6 @@
     class="btn btn-js-curval-modal btn-add-link"
     data-toggle="modal"
     data-target=#curvalModal
-    data-layout-id="[% col.id %]"
-    data-instance-name="[% col.layout_parent.identifier %]"
   >
     <span class="btn__title">Add</span>
   </button>
@@ -1134,6 +1165,16 @@
             id    = "curval-current-id-" _ val.id
             name  = field
             value = val.as_query OR val.id
+            data_attributes = [{
+                name  = "restore_value"
+                value = val.as_query OR val.id
+            },{
+                name  = "list-id"
+                value = val.id
+            },{
+                name  = "list-text"
+                value = val.value
+            }]
           }
         }
         modal = {

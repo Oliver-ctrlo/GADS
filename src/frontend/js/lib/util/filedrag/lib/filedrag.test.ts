@@ -1,12 +1,5 @@
+import "../../../../../testing/globals.definitions";
 import FileDrag from './filedrag';
-
-declare global {
-    interface Window {
-        $: any;
-    }
-}
-
-window.$ = require('jquery');
 
 class FileDragTest extends FileDrag {
     constructor(element, onDrop?: (files: FileList | File) => void) {
@@ -24,7 +17,7 @@ class FileDragTest extends FileDrag {
 
 describe('FileDrag class tests', () => {
     function createBaseDOM() {
-        let div = document.createElement('div');
+        const div = document.createElement('div');
         const child = document.createElement('div');
         child.className = 'boop';
         div.append(child);
@@ -49,8 +42,7 @@ describe('FileDrag class tests', () => {
         const fileDrag = new FileDragTest(document.createElement('div'));
         fileDrag.setDragging(true);
         expect(fileDrag.getDragging()).toBeTruthy();
-        const e = $.Event('dragleave');
-        (<any>e).originalEvent = { pageX: 0, pageY: 0 };
+        const e = $.Event('dragleave', { originalEvent: { pageX: 0, pageY: 0 } });
         $(document).trigger(e);
         expect(fileDrag.getDragging()).toBeFalsy();
     });
@@ -79,15 +71,14 @@ describe('FileDrag class tests', () => {
 
     it('shows the correct element when dragging ends', () => {
         const child = createBaseDOM();
-        const fileDrag = new FileDragTest(child);
+        new FileDragTest(child);
         const parent = child.parentElement;
         expect(parent).toBeDefined();
         const dropZone = parent!.querySelector('.drop-zone');
         expect(dropZone).toBeDefined();
         const e = $.Event('dragenter');
         $(document).trigger(e);
-        const e2 = $.Event('dragleave');
-        (<any>e2).originalEvent = { pageX: 0, pageY: 0 };
+        const e2 = $.Event('dragleave', { originalEvent: { pageX: 0, pageY: 0 }, preventDefault: jest.fn() });
         $(document).trigger(e2);
         expect(child.style.display).toBe('');
         expect(child.style.visibility).toBe('');
@@ -97,7 +88,7 @@ describe('FileDrag class tests', () => {
 
     it('creates the correct drop zone element', () => {
         const child = createBaseDOM();
-        const fileDrag = new FileDragTest(child);
+        new FileDragTest(child);
         const parent = child.parentElement;
         expect(parent).toBeDefined();
         const dropZone = parent!.querySelector('.drop-zone');
@@ -109,27 +100,28 @@ describe('FileDrag class tests', () => {
 
     it('triggers the event as expected when a file is dropped', () => {
         const child = createBaseDOM();
-        const dropFunction = jest.fn((files)=>{
+        const dropFunction = jest.fn((files) => {
             const myFile = files;
             expect(myFile).toBeDefined();
             expect(myFile.name).toBe('test.txt');
         });
-        const fileDrag = new FileDragTest(child, (file)=>dropFunction(file));
+        const fileDrag = new FileDragTest(child, (file) => dropFunction(file));
         fileDrag.setDragging(true);
         const parent = child.parentElement;
         expect(parent).toBeDefined();
         const dropZone = parent!.querySelector('.drop-zone');
         expect(dropZone).toBeDefined();
-        const e = $.Event('drop');
-        (<any>e).originalEvent = {
-            dataTransfer: {
-                files: [
-                    {
-                        name: 'test.txt',
-                    },
-                ],
-            },
-        };
+        const e = $.Event('drop', {
+            originalEvent: {
+                dataTransfer: {
+                    files: [
+                        {
+                            name: 'test.txt',
+                        },
+                    ],
+                },
+            }, preventDefault: jest.fn()
+        });
         $(dropZone!).trigger(e);
         expect(dropFunction).toHaveBeenCalled();
     });

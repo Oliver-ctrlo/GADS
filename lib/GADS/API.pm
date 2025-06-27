@@ -155,7 +155,7 @@ sub _update_record
     {
         my $col = $record->layout->column_by_name_short($field)
             or error __x"Column not found: {name}", name => $field;
-        $record->fields->{$col->id}->set_value($request->{$field});
+        $record->get_field_value($col)->set_value($request->{$field});
     }
     $record->write; # borks on error
 };
@@ -332,7 +332,7 @@ post '/api/token' => sub {
     # RFC6749 says try auth header first, then fall back to body params
     if (my $auth = request->header('authorization'))
     {
-        if (my ($encoded) = split 'Basic ', $auth)
+        if (my ($encoded) = $auth =~ /^Basic (.+)/)
         {
             if (my $decoded = decode_base64 $encoded)
             {
@@ -420,7 +420,7 @@ post '/api/token' => sub {
 
 prefix '/:layout_name' => sub {
 
-    get '/api/field/values/:id' => require_login sub {
+    post '/api/field/values/:id' => require_login sub {
 
         my $user   = logged_in_user;
         my $layout = var('layout') or pass;
@@ -441,14 +441,27 @@ prefix '/:layout_name' => sub {
             foreach my $col (@{$curval->subvals_input_required})
             {
                 my @vals = grep { defined $_ } query_parameters->get_all($col->field);
-                my $datum = $record->fields->{$col->id};
+                my $datum = $record->get_field_value($col);
                 $datum->set_value(\@vals);
             }
             $record->write(
-                dry_run           => 1,
-                missing_not_fatal => 1,
-                submitted_fields  => $curval->subvals_input_required,
-                submission_token  => $submission_token,
+                dry_run            => 1,
+                missing_not_fatal  => 1,
+                # XXX It is possible that the record initiating this function
+                # already has a value in a read-only field. This field, despite
+                # being read-only, should still affect the filtered drop-down.
+                # However, because this temporary record is new, it won't allow
+                # the value to be written. Ideally we would load the existing
+                # record at this point, but this would take too long with the
+                # current code. Therefore, allow the read-only value to be
+                # written to. This technically enables the user to submit a
+                # different value and therefore produce a different shortlist,
+                # so longer-term the submitted values from a filtered-curval
+                # should be validated (which should happen anyway, as they
+                # could technically be forced)
+                force_readonly_new => 1,
+                submitted_fields   => $curval->subvals_input_required,
+                submission_token   => $submission_token,
             );
         } # Missing values are reporting as non-fatal errors, and would therefore
           # not be caught by the try block and would be reported as normal (including
@@ -739,7 +752,7 @@ sub _post_add_user_account
         department_id         => $body->{department_id},
         team_id               => $body->{team_id},
         account_request       => 0,
-        account_request_notes => $body->{notes},
+        account_request_notes => $body->{notes} || $body->{account_request_notes},
         view_limits           => $body->{view_limits},
         groups                => $body->{groups},
     );
@@ -1190,7 +1203,8 @@ sub _get_records {
             my @filters;
             foreach my $group_col_id (@{$records->group_col_ids})
             {
-                my $filter_value = $rec->fields->{$group_col_id}->filter_value || '';
+                my $group_col = $layout->column($group_col_id);
+                my $filter_value = $rec->get_field_value($group_col)->filter_value || '';
                 push @filters, "$group_col_id=".uri_escape_utf8($filter_value);
             }
             my $desc = $rec->id_count == 1 ? 'record' : 'records';
@@ -1204,7 +1218,7 @@ sub _get_records {
         else {
             $data->{_id} = $rec->current_id;
         };
-        $data->{$_->id} = $rec->fields->{$_->id}->for_table
+        $data->{$_->id} = $rec->get_field_value($_)->for_table
             foreach @{$records->columns_render};
 
         push @{$return->{data}}, $data;
@@ -1224,8 +1238,9 @@ sub _get_records {
     if (my $agg = $records->aggregate_results)
     {
         my $data;
-        $data->{$_->id} = $agg->fields->{$_->id}->for_table
-            foreach @{$records->columns_render};
+        foreach (grep {$_->aggregate} (@{$records->columns_render})) {
+            $data->{$_->id} = $agg->get_field_value($_)->for_table;
+        }
         $return->{aggregate} = $data;
     }
 
@@ -1351,7 +1366,7 @@ any ['get', 'post'] => '/api/users' => require_any_role [qw/useradmin superadmin
     my $start  = $params->get('start') || 0;
     my $length = $params->get('length') || 10;
 
-    my $users     = GADS::Users->new(schema => schema)->user_summary_rs;
+    my $users     = schema->resultset('User')->summary;
     my $total     = $users->count;
     my $col_order = $params->get('order[0][column]');
     my $sort_by   = defined $col_order && $params->get("columns[${col_order}][name]");
@@ -1431,6 +1446,17 @@ any ['get', 'post'] => '/api/users' => require_any_role [qw/useradmin superadmin
 
     content_type 'application/json; charset=UTF-8';
     return encode_json $return;
+};
+
+get '/api/get_key' => require_login sub {
+    my $user = logged_in_user;
+
+    my $key = $user->encryption_key;
+
+    return to_json {
+        error => 0,
+        key   => $key
+    }
 };
 
 sub _success

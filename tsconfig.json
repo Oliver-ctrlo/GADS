@@ -3,8 +3,8 @@
     "baseUrl": "./src/frontend",
     "outDir": "./dist/",
     "noImplicitAny": false,
-    "module": "es2015",
-    "target": "ES5",
+    "module": "ES2020",
+    "target": "ES2020",
     "jsx": "react",
     "allowJs": true,
     "moduleResolution": "node",
@@ -26,6 +26,9 @@
       "validation": [
         "js/lib/validation"
       ],
+      "logging": [
+        "js/lib/logging"
+      ],
     }
   },
   "include": [
@@ -35,5 +38,6 @@
     "node_modules",
     "dist",
     "src/**/*.test.ts",
+    "src/**/*.definitions.ts"
   ]
 }

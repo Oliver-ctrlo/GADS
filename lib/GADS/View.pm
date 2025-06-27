@@ -26,7 +26,7 @@ use MIME::Base64;
 use String::CamelCase qw(camelize);
 
 use Moo;
-use MooX::Types::MooseLike::Base qw(:all);
+use MooX::Types::MooseLike::Base qw(Maybe Int Bool HashRef ArrayRef);
 use namespace::clean;
 
 has id => (
@@ -94,6 +94,7 @@ has _view_rs => (
 
 sub _build__view_rs
 {   my $self = shift;
+    return if !$self->id;
     $self->schema->resultset('View')->find({
         'me.id'          => $self->id,
         # instance_id isn't strictly needed as id is the primary key

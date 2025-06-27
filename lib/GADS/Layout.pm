@@ -53,7 +53,7 @@ use JSON qw(decode_json encode_json);
 use String::CamelCase qw(camelize);
 
 use Moo;
-use MooX::Types::MooseLike::Base qw/:all/;
+use MooX::Types::MooseLike::Base qw/Maybe Int Str Bool ArrayRef HashRef/;
 
 has schema => (
     is       => 'rw',
@@ -295,11 +295,6 @@ has _user_permissions_columns => (
     clearer => 1,
 );
 
-has reports=> (
-    is      => 'lazy',
-    isa     => ArrayRef,
-);
-
 has security_marking => (
     is => 'lazy',
 );
@@ -309,13 +304,20 @@ sub _build_security_marking {
     $self->_rset->read_security_marking;
 }
 
-sub _build_reports
-{   my $self = shift;
-    my $reports_rs = $self->schema->resultset('Report')->search({
+sub reports
+{   my ($self, %options) = @_;
+    
+    my $user = $self->user;
+
+    # By default only show a user their own reports, unless this is an admin
+    # request to manage all reports
+    my $reports_rs = $self->schema->resultset('Report')->extant->search({
         instance_id => $self->instance_id,
-        deleted => undef
     });
-    return [$reports_rs->all];
+    $reports_rs = $reports_rs->by_user($user)
+        unless $options{all} && $self->user_can("layout");
+
+    [$reports_rs->all];
 }
 
 sub _build__user_permissions_columns
@@ -914,6 +916,7 @@ sub clear
     $self->clear_permissions;
     $self->_clear_mycols;
     $self->clear_cached_records;
+    $self->clear_cached_records_autocur;
     $self->clear_all_short_names;
 }
 
@@ -1133,6 +1136,15 @@ sub all_user_read
 # columns in this layout. As the layout is (currently) rebuilt each request, we
 # can afford to do this
 has cached_records => (
+    is      => 'lazy',
+    builder => sub { +{} },
+    clearer => 1,
+);
+
+# The same for autocur fields. In theory this could be the same cache as above,
+# but this results in test failures as the ordering in calc fields is then
+# different. Possible further investigation needed.
+has cached_records_autocur => (
     is      => 'lazy',
     builder => sub { +{} },
     clearer => 1,

@@ -22,7 +22,7 @@ use CGI::Deurl::XS 'parse_query_string';
 use HTML::Entities qw/encode_entities/;
 use Log::Report 'linkspace';
 use Moo;
-use MooX::Types::MooseLike::Base qw/:all/;
+use MooX::Types::MooseLike::Base qw/Maybe Bool ArrayRef HashRef Str/;
 
 extends 'GADS::Datum';
 
@@ -127,6 +127,8 @@ sub _build__init_value_hash
         my (@ids, @records);
         foreach my $v (@{$self->init_value})
         {
+            $self->_set_has_more($v->{has_more})
+                if ref $v eq 'HASH' && defined $v->{has_more};
             my ($record, $id) = $self->_transform_value($v);
             push @records, $record if $record;
             # Don't include IDs of draft records. These will be recreated
@@ -329,7 +331,7 @@ has ids_affected => (
 sub _build_ids_affected
 {   my $self = shift;
     my %ids = map { $_ => 1 } $self->oldvalue ?  @{$self->oldvalue->all_ids} : ();
-    $ids{$_} = 1 foreach @{$self->ids};
+    $ids{$_} = 1 foreach @{$self->all_ids};
     [ keys %ids ];
 }
 
@@ -355,6 +357,18 @@ sub id
     $self->column->multivalue
         and panic "Cannot return single id value for multivalue field";
     $self->ids->[0];
+}
+
+has has_more => (
+    is      => 'rwp',
+    isa     => Bool,
+    lazy    => 1,
+    builder => 1,
+);
+
+sub _build_has_more
+{   my $self = shift;
+    $self->column->limit_rows ? 1 : 0;
 }
 
 # Remove any draft subrecords that have been created just for this curval
@@ -420,7 +434,7 @@ sub _build_values_as_query_records
             # encodes in utf-8. Therefore decode before passing into datums.
             my @newv = ref $newv eq 'ARRAY' ? @$newv : ($newv);
             $_ && utf8::decode($_) foreach @newv;
-            $record->fields->{$col->id}->set_value(\@newv)
+            $record->get_field_value($col)->set_value(\@newv)
                 if defined $params->{$col->field} && $col->userinput && defined $newv;
         }
         push @records, $record;
@@ -474,7 +488,7 @@ sub for_table
             version_id => $val->{version_id},
             fields     => [],
         };
-        push @{$ret->{fields}}, $val->{record}->fields->{$_->id}->for_table
+        push @{$ret->{fields}}, $val->{record}->get_field_value($_)->for_table
             foreach @{$self->column->curval_fields};
         push @{$return->{values}}, $ret;
     }

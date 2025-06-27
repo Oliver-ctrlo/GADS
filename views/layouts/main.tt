@@ -3,15 +3,13 @@
   <head>
     <meta charset="utf-8">
     <title>[% page %] | Linkspace</title>
-    <meta name="author" content="Digitpaint">
     <meta name="description" content="">
     <meta name="author" content="">
-    <meta name="generator" content="Roger" />
     <meta name="viewport" content="width=device-width,minimum-scale=1,initial-scale=1">
-    <link rel="stylesheet" href="[% url.css %]/external.css?v=5">
-    <link rel="stylesheet" href="[% url.css %]/general.css?v=5">
+    <link rel="stylesheet" href="[% url.css %]/external.css?v=7">
+    <link rel="stylesheet" href="[% url.css %]/general.css?v=8">
   </head>
-  <body class="[% body_class || 'page' %]"[% IF csrf_token %] data-csrf="[%- csrf_token -%]"[% END; IF layout OR layout_obj; %] data-layout-identifier="[% layout.identifier || layout_obj.identifier %]"[% END %]>
+  <body class="[% body_class || 'page' %]"[% IF csrf_token %] data-csrf="[%- csrf_token -%]"[% END; IF layout OR layout_obj; %] data-layout-identifier="[% layout.identifier || layout_obj.identifier %]"[% END %][% IF actions; %] data-actions="[% b64_filter(actions) %]"[% END; %]>
     <div class="[% container_class || 'container-fluid' %]">
       [%
         IF page == "login" OR page == "register" OR page == "reset" OR page == "invalidsite";
@@ -24,6 +22,6 @@
       %]
     </div>
     <script type="text/javascript" src="[% url.js %]/fengari-web.js"></script>
-    <script type="text/javascript" src="[% url.js %]/site.js?v=25"></script>
+    <script type="text/javascript" src="[% url.js %]/site.js?v=33"></script>
   </body>
 </html>

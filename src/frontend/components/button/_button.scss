@@ -223,6 +223,18 @@ $btn-border-radius: 23px;
   }
 }
 
+.btn-remove {
+  @include btn-default;
+
+  &::before {
+    @extend %icon-font;
+
+    content: "\e82b";
+    margin-right: 0.5rem;
+    color: $white;
+  }
+}
+
 .btn-import,
 .btn-export,
 .btn-add-link,
@@ -233,7 +245,8 @@ $btn-border-radius: 23px;
 .btn-search,
 .btn-sort,
 .btn-toggle,
-.btn-toggle-off {
+.btn-toggle-off,
+.btn-clear {
   display: flex;
   align-items: center;
   width: max-content;
@@ -242,6 +255,7 @@ $btn-border-radius: 23px;
   border-bottom: 1px solid transparent;
   border-radius: 0;
   color: $brand-secundary;
+  background: $transparent;
 
   &::before {
     @extend %icon-font;
@@ -249,6 +263,8 @@ $btn-border-radius: 23px;
     content: "\E80a";
     margin-right: 0.75rem;
     color: $brand-secundary;
+    background: $transparent;
+    transition: all 0.2s ease;
   }
 
   &:hover,
@@ -258,6 +274,7 @@ $btn-border-radius: 23px;
     box-shadow: none;
     color: $brand-secundary;
     text-decoration: none;
+    background: $transparent;
   }
 }
 
@@ -380,6 +397,15 @@ $btn-border-radius: 23px;
   }
 }
 
+.btn-help {
+  &::before {
+    @extend %icon-font;
+    transition: all 0.2s ease;
+
+    content: "\E816";
+  }
+}
+
 .btn-plain {
   border: 0;
   color: $gray-extra-dark;
@@ -418,6 +444,13 @@ $btn-border-radius: 23px;
 .btn-email {
   &::before {
     content: "\E81c";
+  }
+}
+
+.btn-clear {
+  &::before {
+    content: "\E80B";
+    transform: rotate(180deg);
   }
 }
 
@@ -468,11 +501,11 @@ $btn-border-radius: 23px;
   }
 }
 
-.sorting_asc .btn-sort::before {
+.dt-ordering-asc .btn-sort::before {
   transform: rotate(-90deg);
 }
 
-.sorting_desc .btn-sort::before {
+.dt-ordering-desc .btn-sort::before {
   transform: rotate(90deg);
 }
 
@@ -550,7 +583,8 @@ $btn-border-radius: 23px;
   .btn-import,
   .btn-export,
   .btn-add-link,
-  .btn-filter { // to overwrite auto width of .btn
+  .btn-filter,
+  .btn-clear { // to overwrite auto width of .btn
     width: max-content;
   }
 
@@ -564,4 +598,36 @@ $btn-border-radius: 23px;
       margin-right: $padding-small-horizontal;
     }
   }
+}
+
+.table-toggle--add .btn,
+.table-toggle--remove .btn {
+  $button-size: 19px;
+
+  position: absolute;
+  right: 1rem;
+  width: $button-size;
+  height: $button-size;
+  margin: 0;
+  padding: 0;
+  font-size: 18px;
+  font-weight: bolder;
+  line-height: 16px;
+}
+
+.table-toggle--add .btn::before {
+  @extend %icon-font;
+  content: "\E804";
+  color: $brand-success;
+}
+
+.table-toggle--remove .btn::before {
+  @extend %icon-font;
+  content: "\E807";
+  color: $brand-danger;
+}
+
+.rename::before {
+  @extend %icon-font;
+  content: "\E80b";
 }

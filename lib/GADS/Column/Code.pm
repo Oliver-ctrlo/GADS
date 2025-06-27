@@ -25,7 +25,7 @@ use JSON qw(decode_json encode_json);
 use Log::Report 'linkspace';
 use MIME::Base64 qw/encode_base64/;
 use Moo;
-use MooX::Types::MooseLike::Base qw/:all/;
+use MooX::Types::MooseLike::Base qw/Str/;
 
 use Inline 'Lua' => q{
     function lua_run(string, vars, working_days_diff, working_days_add)
@@ -96,7 +96,8 @@ use Inline 'Lua' => q{
             insert = table.insert,
             maxn = table.maxn,
             remove = table.remove,
-            sort = table.sort
+            sort = table.sort,
+            concat = table.concat
         }
         env["tonumber"] = tonumber
         env["tostring"] = tostring
@@ -205,6 +206,9 @@ sub update_cached
 
     $self->clear; # Refresh calc for updated calculation
     my $layout = $self->layout;
+    # Need to clear layout so that GADS::Records below uses the new parameters
+    # for this column (such as if the return type has changed)
+    $layout->clear;
 
     local $GADS::Schema::IGNORE_PERMISSIONS = 1;
 

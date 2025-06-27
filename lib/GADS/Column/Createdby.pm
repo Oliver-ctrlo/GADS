@@ -20,7 +20,6 @@ package GADS::Column::Createdby;
 
 use Log::Report 'linkspace';
 use Moo;
-use MooX::Types::MooseLike::Base qw/:all/;
 
 extends 'GADS::Column::Person';
 
@@ -60,6 +59,14 @@ sub tjoin
     return undef if $self->name_short eq '_created_user';
     'createdby';
 }
+
+around '_build_retrieve_fields' => sub {
+    my $orig = shift;
+    my $self = shift;
+    # See comments above regarding this field type
+    return if $self->name_short eq '_created_user';
+    return $orig->(@_);
+};
 
 # Different to normal function, this will fetch users when passed a list of IDs
 sub fetch_multivalues

@@ -60,12 +60,17 @@ class ValueLookupComponent extends Component {
         } else {
           for (const [name, value] of Object.entries(data.result)) {
             var $f = $('.linkspace-field[data-name-short="'+name+'"]')
-            setFieldValues($f, value)
+            if(!$f || $f.length == 0) continue;
+            try {
+              setFieldValues($f, value)
+            } catch (e) {
+              console.error("Error setting field values", e)
+            }
           }
           removeStatusMessage($field)
         }
       })
-      .fail(function(jqXHR, textStatus, textError) {
+      .fail(function(jqXHR, textStatus) {
         // Use error in JSON from endpoint if available, otherwise try and
         // interpret error response appropriately
         const err_message = textStatus == "timeout"

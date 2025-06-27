@@ -57,11 +57,11 @@ has filtering => (
         );
         if ($value->{from} && ref $value->{from} ne 'DateTime')
         {
-            $value->{from} = GADS::DateTime::parse_datetime($value->{from});
+            $value->{from} = GADS::DateTime::parse_datetime(undef, $value->{from});
         }
         if ($value->{to} && ref $value->{to} ne 'DateTime')
         {
-            $value->{to} = GADS::DateTime::parse_datetime($value->{to});
+            $value->{to} = GADS::DateTime::parse_datetime(undef, $value->{to});
         }
         $value->{from} ||= DateTime->now->subtract(hours => 24);
         $value->{to}   ||= DateTime->now;
@@ -160,14 +160,21 @@ sub logs
             -desc => 'datetime',
         },
     });
-    $rs->result_class('DBIx::Class::ResultClass::HashRefInflator');
+    
     my @logs = $rs->all;
     my $site = $self->schema->resultset('Site')->next;
-    $_->{user} = GADS::Datum::Person->new(
-        schema     => $self->schema,
-        init_value => $_->{user},
-    )->presentation(type => 'person', site => $site) foreach @logs;
-    \@logs;
+    
+    my @result = map {
+        +{
+            id          => $_->id,
+            type        => $_->type,
+            datetime    => $_->datetime->gads_time,
+            description => $_->description,
+            user        => $_->user,
+        }
+    } @logs;
+
+    \@result;
 }
 
 sub csv
@@ -191,5 +198,3 @@ sub csv
 }
 
 1;
-
-

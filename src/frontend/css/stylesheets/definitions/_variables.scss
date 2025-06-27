@@ -11,6 +11,8 @@ $brand-success: #18856B;
 $brand-success-light: #26D2A9;
 $brand-info-light: #ABA9EB;
 
+$field-highlight: lighten($brand-warning, 40%);
+
 $warning: $brand-warning;
 
 $brand-secundary-hover: $brand-primary;
@@ -105,6 +107,7 @@ $table-bg: $white;
 $table-accent-bg: $gray-light;
 $table-hover-bg: rgba($brand-secundary, 0.2);
 $table-border-color: $gray-light;
+$table-border-radius: 5px;
 $table-cell-padding: $padding-base-horizontal;
 
 // Alerts

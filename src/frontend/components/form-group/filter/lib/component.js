@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-this-alias */
 import { Component } from 'component'
 import '@lol768/jquery-querybuilder-no-eval/dist/js/query-builder.standalone.min'
 import 'bootstrap-select/dist/js/bootstrap-select'
@@ -176,7 +177,7 @@ class FilterComponent extends Component {
     })
 
     if(filterBase) {
-      const data = Buffer.from(filterBase, 'base64')
+      const data = atob(filterBase, 'base64')
       try {
         const obj = JSON.parse(data);
         if (obj.rules && obj.rules.length) {
@@ -201,7 +202,7 @@ class FilterComponent extends Component {
     }
   }
 
-  makeUpdateFilter(builder) {
+  makeUpdateFilter() {
     window.UpdateFilter = (builder, ev) => {
       if (!builder.queryBuilder('validate')) ev.preventDefault();
       const res = builder.queryBuilder('getRules')
@@ -218,12 +219,7 @@ class FilterComponent extends Component {
     ...(col.type === 'rag'
       ? this.ragProperties
       : col.hasFilterTypeahead
-      ? this.typeaheadProperties(
-          col.urlSuffix,
-          builderConfig.layoutId,
-          col.instanceId,
-          col.useIdInFilter
-        )
+      ? this.typeaheadProperties
       : {})
   })
 }
@@ -244,25 +240,27 @@ class FilterComponent extends Component {
     return operators
   }
 
-  typeaheadProperties = (urlSuffix, layoutId, instanceId, useIdInFilter) => ({
-    input: (container, input_name) => {
-      return (
-        `<div class='tt__container'>
-          <input class='form-control typeahead_text' type='text' name='${input_name}_text'/>
-          <input class='form-control typeahead_hidden' type='hidden' name='${input_name}'/>
-        </div>`
-      )
-    },
-    valueSetter: (rule, value) => {
-      rule.$el.find('.typeahead_hidden').val(value)
-      const typeahead = rule.$el.find('.typeahead_text')
-      typeahead.typeahead('val',rule.data.text)
-      typeahead.val(rule.data.text)
-    },
-    validation: {
-      callback: () => {return true}
+  get typeaheadProperties() {
+    return {
+      input: (container, input_name) => {
+        return (
+          `<div class='tt__container'>
+            <input class='form-control typeahead_text' type='text' name='${input_name}_text'/>
+            <input class='form-control typeahead_hidden' type='hidden' name='${input_name}'/>
+          </div>`
+        )
+      },
+      valueSetter: (rule, value) => {
+        rule.$el.find('.typeahead_hidden').val(value)
+        const typeahead = rule.$el.find('.typeahead_text')
+        typeahead.typeahead('val',rule.data.text)
+        typeahead.val(rule.data.text)
+      },
+      validation: {
+        callback: () => {return true}
+      }
     }
-  })
+  }
 
   getRecords = (layoutId, urlSuffix, instanceId, query) => {
     return (
