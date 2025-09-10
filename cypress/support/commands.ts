@@ -2,11 +2,13 @@
 /* eslint-disable @typescript-eslint/no-namespace */
 /// <reference types="cypress" />
 
+import 'cypress-axe';
 import { LayoutDefinition } from "./builders/layout/definitions";
 import { IBuildable, IDropdownLayoutBuilder } from "./builders/layout/interfaces";
 import { LayoutBuilder } from "./builders/layout/LayoutBuilder";
 import { instanceMode, tablePermissions } from "./constants";
 
+import { goodPassword, goodUser } from "./constants";
 export { }
 
 declare global {
@@ -388,6 +390,221 @@ Cypress.Commands.add("createLayoutsFromDefinition", (layoutDefs: LayoutDefinitio
         builder.checkField();
     }
     return cy.mainBody();
+});
+
+Cypress.Commands.add("addUserToDefaultGroup", (user: string) =>
+    cy.visit('http://localhost:3000/user_overview/')
+        .get('td').contains(user).click()
+        .get('input#groups_1').check({ force: true })
+        .get('button[name="submit"]').click()
+);
+
+Cypress.Commands.add("addDataToLayoutFromDefinition", (layoutDefs: LayoutDefinition) => {
+    cy.visit('http://localhost:3000/table1/data');
+    cy.get('a.btn-add').contains('Add a record').click();
+    for (const [layoutType, layoutDef] of Object.entries(layoutDefs)) {
+        cy.setFieldValueByShortName(layoutDef.shortName, layoutDef.data!);
+    }
+    return cy.get('button[name="submit"]').contains("Submit and exit").click();
+});
+
+Cypress.Commands.add("deleteAllData", (table: string) =>
+    cy.setTablePermissionsByShortName(table, { "Delete records": true, "Purge deleted records": true, "Bulk delete records": true })
+        .gotoInstanceByShortName(table, "data")
+        .get("button").contains("Actions").click()
+        .get("a[data-target='#bulkDelete']").click()
+        .get("button[type='submit']").contains("Delete").click()
+);
+
+Cypress.Commands.add("purgeAllDeletedData", (shortName: string) => {
+    cy.visit('http://localhost:3000/table1/purge')
+        .get("input[type='checkbox']").check({ force: true })
+        .get("button[data-target='#purge']").click()
+        .get("button[type='submit']").contains("Confirm").click()
+    //.get('button')cy, : .cre
+    //.should('be.visible')
+    //.click();
+});
+
+Cypress.Commands.add("deleteLayoutsFromDefinitions", (layoutDefs: LayoutDefinition) => {
+    for (const [layoutType, layoutDef] of Object.entries(layoutDefs)) {
+        cy.deleteLayoutByShortName(layoutDef.shortName, true);
+    }
+    return cy.mainBody();
+});
+
+Cypress.Commands.add("clearAllTablePermissions", (shortName: string) => {
+    const permissions = { "Delete records": false, "Purge deleted records": false, "Download records": false, "Bulk import records": false, "Bulk update records": false, "Bulk delete records": false, "Manage linked records": false, "Manage child records": false, "Manage views": false, "Manage group views": false, "Select extra view limits": false, "Manage fields": false, "Send messages": false }
+    cy.setTablePermissionsByShortName(shortName, permissions);
+    return cy.mainBody();
+});
+
+Cypress.Commands.add("populateTableWithLayouts", (shortName: string) => {
+    const layoutDefs: LayoutDefinition = {
+        "TEXT": { name: "Text Field", shortName: "txt_fd" },
+        "DROPDOWN": { name: "Dropdown Field", shortName: "drop_fd", options: { values: ["Red", "Green", "Blue"]}},
+        "INTEGER": { name: "Number Field", shortName: "int_fd" },
+        "DATE": { name: "Date Field", shortName: "date_fd" },
+        "DATE-RANGE": { name: "Range Field", shortName: "range_fd" },
+    }
+    //   { type: "DOCUMENT", name: "Document", shortName: "doc" },
+    //   { type: "PERSON", name: "Person Field", shortName: "person" },
+
+    cy.createLayoutsFromDefinition(layoutDefs);
+});
+
+
+Cypress.Commands.add("cleanTableOfLayouts", (shortName: string) => {
+    const layoutDefs =
+    {
+        "TEXT": { name: "Text Field", shortName: "txt_fd" },
+        "DROPDOWN": { name: "Dropdown Field", shortName: "drop_fd", options: { values: ["Red", "Green", "Blue"]}},
+        "INTEGER": { name: "Number Field", shortName: "int_fd" },
+        "DATE": { name: "Date Field", shortName: "date_fd" },
+        "DATE-RANGE": { name: "Range Field", shortName: "range_fd" },
+    };
+
+    // Loop through each layout definition
+    cy.deleteLayoutsFromDefinitions(layoutDefs); // Delete each layout by shortName
+});
+
+
+Cypress.Commands.add("clearImports", (shortName) => {
+    cy.visit(`http://localhost:3000/${shortName}/import`);
+    cy.contains('button.btn-danger', 'Clear completed reports')
+        .click();
+
+    cy.get('#deleteModal')
+        .should('be.visible')
+        .within(() => {
+            cy.contains('button', 'Confirm').click();
+        });
+
+    cy.get('td.dt-empty')
+        .should('contain.text', 'No imports to show');
+});
+
+
+Cypress.Commands.add("bulkImportRecords", (csvFilePath = 'cypress/fixtures/Import-test-data.csv') => {
+
+    cy.visit('http://localhost:3000/table1/data');
+
+    cy.get('button#bulk_actions').click();
+    cy.get('a[href="/table1/import/"]').click();
+
+    cy.get('h2.table-header__page-title')
+        .should('contain.text', 'Import records');
+
+    cy.get('a[href="/table1/import/data/"]').click();
+
+    cy.get('h2.table-header__page-title')
+        .should('contain.text', 'Upload');
+
+
+    cy.get("label").contains("Dry run")
+        .then(($label) => {
+            const target = $label.attr("for");
+            cy.get(`input#${target}`).uncheck({ force: true });
+        });
+
+
+    cy.get('input[type="file"]').selectFile(csvFilePath, { force: true });
+
+    cy.contains('Submit').click();
+
+    cy.get('.alert.alert-success')
+        .should('be.visible')
+        .and('contain.text', 'The file import process has been started');
+
+    cy.wait(5000);
+
+    cy.visit('http://localhost:3000/table1/import');
+    cy.get('a.link--plain')
+        .contains('Completed')
+        .should('exist');
+
+    cy.get('a.link--plain').contains(/errors:\s*0/);
+    cy.get('a.link--plain').contains(/skipped:\s*0/);
+});
+
+Cypress.Commands.add("addUserToDefaultGroup", (user: string, CheckOrUncheck: 'check' | 'uncheck') =>
+    cy.visit('http://localhost:3000/user_overview/')
+        .get('td').contains(user).click()
+        .get('input#groups_1')[CheckOrUncheck]({ force: true })
+        .get('button[name="submit"]').click()
+);
+
+Cypress.Commands.add("addDataToLayoutFromDefinition", (layoutDefs: LayoutDefinition) => {
+    cy.visit('http://localhost:3000/table1/data');
+    cy.get('a.btn-add').contains('Add a record').click();
+    for (const [layoutType, layoutDef] of Object.entries(layoutDefs)) {
+        cy.setFieldValueByShortName(layoutDef.shortName, layoutDef.data!);
+    }
+    return cy.get('button[name="submit"]').contains("Submit and exit").click();
+});
+
+Cypress.Commands.add("deleteAllData", (table: string) =>
+    cy.setTablePermissionsByShortName(table, { "Delete records": true, "Purge deleted records": true, "Bulk delete records": true })
+        .gotoInstanceByShortName(table, "data")
+        .get("button").contains("Actions").click()
+        .get("a[data-target='#bulkDelete']").click()
+        .get("button[type='submit']").contains("Delete").click()
+);
+
+Cypress.Commands.add("purgeAllDeletedData", (shortName: string) =>
+    cy.visit(`http://localhost:3000/${shortName}/purge`)
+        .get("input[type='checkbox']").check({ force: true })
+        .get("button[data-target='#purge']").click()
+        .get("button[type='submit']").contains("Confirm").click()
+);
+
+Cypress.Commands.add("deleteLayoutsFromDefinitions", (layoutDefs: LayoutDefinition) => {
+    for (const [layoutType, layoutDef] of Object.entries(layoutDefs)) {
+        cy.deleteLayoutByShortName(layoutDef.shortName, true);
+    }
+    return cy.mainBody();
+});
+
+Cypress.Commands.add("clearAllTablePermissions", (shortName: string) => {
+    const permissions = { "Delete records": false, "Purge deleted records": false, "Download records": false, "Bulk import records": false, "Bulk update records": false, "Bulk delete records": false, "Manage linked records": false, "Manage child records": false, "Manage views": false, "Manage group views": false, "Select extra view limits": false, "Manage fields": false, "Send messages": false }
+    cy.setTablePermissionsByShortName(shortName, permissions);
+    return cy.mainBody();
+});
+
+Cypress.Commands.add('logout', ()=>{
+    cy.get('a[href="/logout"]').click();
+})
+
+
+
+Cypress.Commands.add('deleteCurrentView', () => {
+  cy.contains("Manage views").click();
+  cy.get('a[role="menuitem"]').contains("Edit current view").click();
+  cy.get(".btn-js-delete").contains("Delete view").click();
+  cy.get('button[type="submit"]').contains("Delete").click();
+});
+
+//This will NOT delete personal views that dont belong to the admin user
+Cypress.Commands.add('deleteAllViewsForTable', (tableName) => {
+    cy.logout();
+    cy.login(goodUser, goodPassword);
+    cy.visit(`http://localhost:3000/${tableName}/data`);
+        
+        const checkAndDelete = () => {
+        cy.get('.dropdown__toggle span')
+        .invoke('text')
+        .then((text) => {
+            if (!text.includes('All data')) {
+                cy.log(`Deleting view: ${text.trim()}`);
+                cy.deleteCurrentView();
+                checkAndDelete(); // Recursivly delete current view until there isnt one
+            } else {
+                cy.log('Reached "All data". No more views to delete.');
+            }
+        });
+    };
+    checkAndDelete();
+
 });
 
 Cypress.Commands.add("addUserToDefaultGroup", (user: string) =>

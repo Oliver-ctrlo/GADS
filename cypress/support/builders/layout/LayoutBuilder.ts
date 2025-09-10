@@ -224,9 +224,9 @@ class CurvalLayoutBuilder extends LayoutBuilderBase implements ICurvalLayoutBuil
         cy.get("label")
             .contains(this.field)
             .click();
-        cy.get("button.btn-xs[data-delete='rule']")
-            .eq(1)
-            .click();
-        //Someone owes me a drink!
+        //cy.get("button.btn-xs[data-delete='rule']")
+            //.eq(1)
+            //.click();
+        //Someone owes me a drink! 
     }
 }

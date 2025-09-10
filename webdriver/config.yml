@@ -22,7 +22,7 @@ plugins:
         session_messages: [ NOTICE, MISTAKE, ERROR, FAULT, ALERT, FAILURE, PANIC ]
     DBIC:
         default:
-            dsn: dbi:Pg:database=linkspace
+            dsn: dbi:Pg:database=linkspace;host=localhost
             schema_class: GADS::Schema
             user: linkspace
             password: linkspace
@@ -43,10 +43,11 @@ plugins:
                 user_roles_resultset: UserPermission
                 roles_role_column: name
                 roles_key: permission
-                password_expiry_days: 5
+                password_expiry_days: 5000
                 users_pwchanged_column: pwchanged
                 users_pwresetcode_column: resetpw
                 encryption_algorithm: SHA-512
                 user_valid_conditions:
                     deleted: ~
                     account_request: 0
+
