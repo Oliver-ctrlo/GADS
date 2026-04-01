@@ -2004,8 +2004,8 @@ sub write
 
     $self->_need_rec($need_rec);
     $self->_need_app($need_app);
-    $hooks->run_hook('record.write.before_write_values', $self, $self->layout);
     $self->write_values(%options, submission_token => $submission_token) unless $options{no_write_values};
+    $hooks->run_hook('record.write.after_write_values', $self, $self->layout) unless $options{no_hook};
 
     # Finally delete any related cached filter values, meaning that any later
     # attempts to delete the referenced current IDs will not throw a database
