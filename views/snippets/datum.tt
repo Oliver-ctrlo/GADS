@@ -37,8 +37,8 @@
         [% ELSE %]
             [% curval.links.size %] 
         [% END %]
-            row[%IF curval.links.size != 1%]s[%END%].</em>
-            <a href="/[% curval.parent_layout_identifier %]/data?curval_record_id=[% curval.record_id %]&curval_layout_id=[% curval.column_id %]" target="_blank">view all</a>)</p>
+            row[%IF curval.links.size != 1%]s[%END%].</em>|
+            <a href="/[% curval.parent_layout_identifier %]/data?curval_record_id=[% curval.record_id %]&curval_layout_id=[% curval.column_id %]&parent_record_id=[% cur_id %]" target="_blank">view all</a>)</p>
     [% END %]
 [% END %]
 
@@ -112,7 +112,7 @@
 [% END %]
 
 [% MACRO render_enum_datum(data, header, full_content) BLOCK %]
-    [% IF !full_content && data.value.length > MORE_LESS_TRESHOLD %]
+    [% IF !full_content && data.value.defined && data.value.length > MORE_LESS_TRESHOLD %]
         [% WRAPPER more_less_block %]
             [% data.value | html %]
         [% END %]
