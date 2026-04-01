@@ -6,7 +6,7 @@ use Moo;
 with 'MooX::Singleton';
 
 my $available_hooks = {
-    'record.write.before_write_values' => 1,
+    'record.write.after_write_values' => 1,
 };
 
 has _hooks => (
