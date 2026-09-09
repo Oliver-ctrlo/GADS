@@ -46,11 +46,11 @@ sub Import_permissions {
        unless $headers && join(',', sort @$headers) eq 'group_id,layout_id,permission';
 
     while (my $row = $csv->getline_hr($fh)) {
-	    
-    my $RowCount = $csv->record_number;
-	my $layout_id = $row->{layout_id}; 
-	my $group_id = $row->{group_id};
-	my $permission = $row->{permission};
+
+		my $RowCount = $csv->record_number;
+		my $layout_id = $row->{layout_id}; 
+		my $group_id = $row->{group_id};
+		my $permission = $row->{permission};
 
         unless (defined $layout_id && $layout_id =~ /^\d+$/) {
             report ERROR =>  "ERROR: Invalid Layout ID '$layout_id' on row $RowCount.";
